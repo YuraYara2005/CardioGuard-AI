@@ -1,0 +1,36 @@
+Environments and Secrets
+
+.env
+.venv/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+CardioGuard Specific Data & DBs
+
+chroma_db/
+*.log
+
+Machine Learning Models (Exclude heavy weights from being tracked)
+
+models/.keras
+models/.h5
+models/.pt
+models/.pth
+models/*.weights
+
+Python specific files
+
+pycache/
+*.py[cod]
+*$py.class
+*.so
+
+OS / IDE / Editor files
+
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
