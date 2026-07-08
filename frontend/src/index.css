@@ -1,0 +1,152 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+
+@layer base {
+  :root {
+    --cg-bg:        #09090f;
+    --cg-surface:   #12121e;
+    --cg-card:      #1a1a2e;
+    --cg-border:    #2a2a45;
+    --cg-primary:   #6366f1;
+    --cg-primary-h: #818cf8;
+    --cg-accent:    #06b6d4;
+    --cg-danger:    #ef4444;
+    --cg-warning:   #f59e0b;
+    --cg-success:   #10b981;
+    --cg-text:      #e2e8f0;
+    --cg-muted:     #64748b;
+  }
+
+  html {
+    font-family: 'Inter', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background-color: var(--cg-bg);
+    color: var(--cg-text);
+    min-height: 100vh;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track { background: var(--cg-surface); }
+  ::-webkit-scrollbar-thumb { background: var(--cg-border); border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--cg-muted); }
+}
+
+@layer components {
+  /* Glass card */
+  .glass-card {
+    @apply rounded-2xl border border-white/5 bg-white/[0.04] backdrop-blur-xl shadow-lg;
+  }
+
+  /* Sidebar item active */
+  .sidebar-item {
+    @apply flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium
+           text-slate-400 hover:text-white hover:bg-white/5 transition-all duration-200 cursor-pointer;
+  }
+  .sidebar-item.active {
+    @apply text-white bg-indigo-600/20 border border-indigo-500/30;
+  }
+
+  /* Primary button */
+  .btn-primary {
+    @apply inline-flex items-center gap-2 px-5 py-2.5 rounded-xl
+           bg-indigo-600 hover:bg-indigo-500 active:scale-95
+           text-white text-sm font-semibold
+           shadow-lg shadow-indigo-500/20 transition-all duration-150;
+  }
+
+  /* Danger button */
+  .btn-danger {
+    @apply inline-flex items-center gap-2 px-5 py-2.5 rounded-xl
+           bg-red-600 hover:bg-red-500 active:scale-95
+           text-white text-sm font-semibold
+           shadow-lg shadow-red-500/20 transition-all duration-150;
+  }
+
+  /* Ghost button */
+  .btn-ghost {
+    @apply inline-flex items-center gap-2 px-4 py-2 rounded-xl
+           border border-white/10 bg-white/5 hover:bg-white/10
+           text-slate-300 text-sm font-medium transition-all duration-150;
+  }
+
+  /* Input field */
+  .input-field {
+    @apply w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5
+           text-sm text-white placeholder:text-slate-500
+           focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50
+           transition-all duration-150;
+  }
+
+  /* Badge */
+  .badge {
+    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold;
+  }
+  .badge-success  { @apply badge bg-emerald-500/15 text-emerald-400 border border-emerald-500/20; }
+  .badge-danger   { @apply badge bg-red-500/15 text-red-400 border border-red-500/20; }
+  .badge-warning  { @apply badge bg-amber-500/15 text-amber-400 border border-amber-500/20; }
+  .badge-info     { @apply badge bg-cyan-500/15 text-cyan-400 border border-cyan-500/20; }
+  .badge-neutral  { @apply badge bg-slate-500/15 text-slate-400 border border-slate-500/20; }
+
+  /* Emergency flash */
+  .emergency-banner {
+    @apply rounded-2xl border border-red-500/50 bg-red-500/10 px-6 py-4;
+    animation: emergency-pulse 1s ease-in-out infinite;
+  }
+}
+
+@layer utilities {
+  .font-mono { font-family: 'JetBrains Mono', monospace; }
+
+  .text-gradient-primary {
+    background: linear-gradient(135deg, #6366f1, #06b6d4);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .glow-indigo {
+    box-shadow: 0 0 24px 4px rgba(99, 102, 241, 0.2);
+  }
+
+  .scrollbar-hidden {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .scrollbar-hidden::-webkit-scrollbar { display: none; }
+}
+
+/* ── Keyframes ──────────────────────────────────────────────────────────────── */
+@keyframes emergency-pulse {
+  0%, 100% { background-color: rgba(239, 68, 68, 0.10); border-color: rgba(239, 68, 68, 0.50); }
+  50%       { background-color: rgba(239, 68, 68, 0.22); border-color: rgba(239, 68, 68, 0.90); }
+}
+
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-in-up {
+  animation: fade-in-up 0.4s ease-out both;
+}
+
+/* ── Print styles (hide navigation / sidebar) ───────────────────────────────── */
+@media print {
+  .print-hidden { display: none !important; }
+  body { background: white; color: black; }
+  .print-page { max-width: 100%; margin: 0; padding: 0; }
+}

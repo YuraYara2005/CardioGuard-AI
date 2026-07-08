@@ -26,7 +26,8 @@ class ECGPredictor:
         0: ("Normal ECG", False),
         1: ("Signs of Atrial Fibrillation (AFib)", False),
         2: ("Acute Myocardial Infarction (Heart Attack)", True),
-        3: ("ST/T Change (Ischemia)", True)
+        3: ("ST/T Change (Ischemia)", True),
+        4: ("Hypertrophy (HYP)", True) # Added HYP based on your team's ML script
     }
 
     def __init__(self, model: Any, log_level: int = logging.INFO):
@@ -119,13 +120,20 @@ class ECGPredictor:
             # 1. Preprocess
             model_input = self._preprocess(leads_data)
             
-            # 2. Predict
-            # verbose=0 suppresses the TF progress bar in standard output
-            predictions = self.model.predict(model_input, verbose=0)
+            # 2. Predict (verbose=0 suppresses the TF progress bar in standard output)
+            raw_predictions = self.model.predict(model_input, verbose=0)
+            
+            # Handle the new ML Team dual-output architecture (Probabilities + Attention Weights)
+            if isinstance(raw_predictions, list) or isinstance(raw_predictions, tuple):
+                class_probs = raw_predictions[0]  # The 5-class sigmoid output
+                attention_weights = raw_predictions[1] # Ready for Member 6's XAI pipeline!
+                # Note: attention_weights could be saved to a database here if needed by the frontend later
+            else:
+                class_probs = raw_predictions
             
             # 3. Postprocess
-            # Assuming the model outputs a softmax array for a single sample: e.g., [[0.1, 0.8, 0.05, 0.05]]
-            probabilities = predictions[0]
+            # The output is a batch, so we take the first item [0]
+            probabilities = class_probs[0]
             predicted_class_index = int(np.argmax(probabilities))
             confidence_score = float(probabilities[predicted_class_index])
 
