@@ -20,7 +20,7 @@ export interface Patient {
   age: number;
   gender: 'Male' | 'Female' | 'Other';
   bloodType?: string;
-  dateOfBirth: string;          // ISO 8601
+  dateOfBirth: string;
   contactNumber?: string;
   email?: string;
   medicalHistory?: string[];
@@ -28,47 +28,29 @@ export interface Patient {
 }
 
 // ─────────────────────────────────────────────
-// ECG Analysis
+// Legacy ECG Analysis
+// Keep temporarily for older frontend code.
 // ─────────────────────────────────────────────
 export interface ECGAnalysisRequest {
   patient_id: string;
   leads: number[] | number[][];
 }
 
-export interface InferenceResult {
-  diagnosis: string;
-  confidence_score: number;       // 0.0 – 1.0
-  is_emergency: boolean;
-  predicted_class_index: number;
-  hrv_metrics?: HRVMetrics;
-  raw_probabilities?: Record<string, number>;
-}
-
 export interface HRVMetrics {
-  rmssd: number;    // ms
-  sdnn: number;     // ms
-  pnn50: number;    // %
+  rmssd: number;
+  sdnn: number;
+  pnn50: number;
   lf_hf_ratio: number;
-  mean_hr: number;  // bpm
+  mean_hr: number;
 }
 
-// ─────────────────────────────────────────────
-// RAG / Report Generation
-// ─────────────────────────────────────────────
-export interface DiagnosisPayload {
+export interface InferenceResult {
   diagnosis: string;
   confidence_score: number;
   is_emergency: boolean;
-}
-
-export interface ClinicalReport {
-  language: 'en' | 'ar';
-  title: string;
-  summary: string;
-  guidelines: string[];
-  recommendations: string[];
-  urgency_level: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
-  generated_at: string;
+  predicted_class_index?: number;
+  hrv_metrics?: HRVMetrics;
+  raw_probabilities?: Record<string, number>;
 }
 
 export interface AnalysisResponse {
@@ -81,21 +63,79 @@ export interface AnalysisResponse {
 }
 
 // ─────────────────────────────────────────────
+// Current CardioGuard Prediction API
+// ─────────────────────────────────────────────
+export interface PredictionResult {
+  diagnosis: string;
+  confidence_score: number;
+  is_emergency: boolean;
+
+  predicted_class_index?: number;
+  predicted_class?: string;
+
+  hrv_metrics?: HRVMetrics;
+  raw_probabilities?: Record<string, number>;
+
+  class_probabilities?: Record<string, number>;
+  probabilities?: Record<string, number>;
+}
+
+export interface MultimodalPredictionResponse {
+  status: string;
+  mode: 'multimodal_fusion' | string;
+  result: PredictionResult;
+}
+
+export interface StandaloneECGPredictionResponse {
+  status: string;
+  mode: 'standalone_ecg' | string;
+  result: PredictionResult;
+}
+
+// ─────────────────────────────────────────────
+// RAG / Report Generation
+// ─────────────────────────────────────────────
+export interface DiagnosisPayload {
+  diagnosis: string;
+  confidence_score: number;
+  is_emergency: boolean;
+}
+
+// Keep this because some UI components may still
+// use structured reports in the future.
+export interface ClinicalReport {
+  language: 'en' | 'ar';
+  title: string;
+  summary: string;
+  guidelines: string[];
+  recommendations: string[];
+  urgency_level: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  generated_at: string;
+}
+
+// This matches the CURRENT backend /report/generate
+// response used by reportService.ts.
+export interface GeneratedReports {
+  doctor_report: string;
+  patient_report: string;
+}
+
+// ─────────────────────────────────────────────
 // Kafka / WebSocket Stream
 // ─────────────────────────────────────────────
 export interface KafkaStreamPayload {
-  timestamp: number;              // Unix ms
-  ecg_value: number;              // Amplitude μV
+  timestamp: number;
+  ecg_value: number;
   patient_id: string;
   is_emergency: boolean;
-  anomaly_type?: string;          // e.g. "AFib", "Heart Attack"
+  anomaly_type?: string;
   confidence?: number;
-  lead?: string;                  // e.g. "Lead II"
+  lead?: string;
 }
 
 export interface ECGDataPoint {
-  t: number;      // x-axis: time ms
-  v: number;      // y-axis: voltage μV
+  t: number;
+  v: number;
 }
 
 // ─────────────────────────────────────────────

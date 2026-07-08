@@ -1,8 +1,8 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './store/AuthContext';
-import LoginPage    from './pages/LoginPage';
+import LoginPage from './pages/LoginPage';
 import DoctorDashboard from './pages/DoctorDashboard';
-import PatientPortal   from './pages/PatientPortal';
+import PatientPortal from './pages/PatientPortal';
 import type { ReactNode } from 'react';
 
 // ── Protected route wrapper ───────────────────────────────────────────────────

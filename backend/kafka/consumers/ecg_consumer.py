@@ -1,21 +1,44 @@
 import json
 import logging
+import time
+
 from collections import defaultdict
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
+
 
 try:
     # pyrefly: ignore [missing-import]
-    from confluent_kafka import Consumer, KafkaError, KafkaException
-except ImportError:
-    Consumer, KafkaError, KafkaException = None, None, None
+    from confluent_kafka import (
+        Consumer,
+        KafkaError,
+    )
 
-# Configure module-level logger
+except ImportError:
+    Consumer = None
+    KafkaError = None
+
+
+# pyrefly: ignore [missing-import]
+from backend.api.websocket_manager import (
+    ecg_websocket_manager,
+)
+
+
 logger = logging.getLogger(__name__)
+
 
 class ECGConsumer:
     """
-    Consumes live streaming 12-lead ECG data from Apache Kafka, runs real-time 
-    inference using the ECGPredictor, and triggers GenAI reporting if anomalies are detected.
+    Consumes live streaming 12-lead ECG data from Kafka.
+
+    Responsibilities:
+
+    1. Receive raw 12-lead ECG timesteps
+    2. Broadcast live telemetry to frontend WebSocket clients
+    3. Accumulate 1000 timesteps per patient
+    4. Run ECG inference
+    5. Broadcast inference results
+    6. Generate reports for detected anomalies
     """
 
     def __init__(
@@ -27,153 +50,620 @@ class ECGConsumer:
         group_id: str = "cardioguard_inference_group",
         log_level: int = logging.INFO
     ):
-        """
-        Initializes the Kafka consumer and injects the required AI services.
 
-        Args:
-            predictor: An instance of ECGPredictor for analyzing the ECG arrays.
-            report_generator: An instance of MedicalReportGenerator for building reports.
-            broker_url: The Kafka bootstrap servers connection string.
-            topic_name: The Kafka topic to subscribe to.
-            group_id: The Kafka consumer group ID for tracking offsets.
-            log_level: The logging level to use. Defaults to logging.INFO.
-        """
         if not logger.handlers:
             handler = logging.StreamHandler()
-            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-            handler.setFormatter(formatter)
-            logger.addHandler(handler)
-        logger.setLevel(log_level)
+
+            formatter = logging.Formatter(
+                "%(asctime)s - "
+                "%(name)s - "
+                "%(levelname)s - "
+                "%(message)s"
+            )
+
+            handler.setFormatter(
+                formatter
+            )
+
+            logger.addHandler(
+                handler
+            )
+
+        logger.setLevel(
+            log_level
+        )
+
 
         if Consumer is None:
-            logger.critical("confluent-kafka is not installed in the current environment.")
-            raise ImportError("Cannot initialize consumer because 'confluent-kafka' is not installed.")
+            logger.critical(
+                "confluent-kafka is not installed."
+            )
+
+            raise ImportError(
+                "Cannot initialize consumer because "
+                "'confluent-kafka' is not installed."
+            )
+
 
         self.predictor = predictor
-        self.report_generator = report_generator
+
+        self.report_generator = (
+            report_generator
+        )
+
         self.broker_url = broker_url
+
         self.topic_name = topic_name
-        
-        # Buffer to accumulate incoming 100Hz timesteps per patient.
-        # Maps patient_id -> list of 12-lead arrays.
-        self.patient_buffers: Dict[str, List[List[float]]] = defaultdict(list)
-        
-        # The PTB-XL model expects 1000 timesteps (10 seconds of 100Hz data).
-        # We trigger inference once we accumulate this much data for a patient.
+
+
+        # ====================================================
+        # Patient Buffers
+        # ====================================================
+
+        self.patient_buffers: Dict[
+            str,
+            List[List[float]]
+        ] = defaultdict(list)
+
+
+        # PTB-XL model:
+        # 1000 timesteps = 10 seconds @ 100 Hz
+
         self.inference_window_size = 1000
+
         self.is_running = False
+
+
+        # ====================================================
+        # Kafka Consumer
+        # ====================================================
 
         try:
-            logger.info(f"Initializing Kafka Consumer connecting to '{self.broker_url}'...")
+            logger.info(
+                "Initializing Kafka Consumer "
+                "connecting to '%s'...",
+                self.broker_url
+            )
+
             self.consumer = Consumer({
-                'bootstrap.servers': self.broker_url,
-                'group.id': group_id,
-                # Start reading from the latest messages if no offset is committed
-                'auto.offset.reset': 'latest',
-                'enable.auto.commit': True
+                "bootstrap.servers":
+                    self.broker_url,
+
+                "group.id":
+                    group_id,
+
+                "auto.offset.reset":
+                    "latest",
+
+                "enable.auto.commit":
+                    True,
             })
-            logger.info("Kafka Consumer successfully initialized.")
-        except Exception as e:
-            logger.critical(f"Failed to initialize Kafka Consumer: {str(e)}")
+
+            logger.info(
+                "Kafka Consumer successfully initialized."
+            )
+
+        except Exception as exc:
+            logger.critical(
+                "Failed to initialize Kafka Consumer: %s",
+                exc
+            )
+
             raise
 
+
+    # ========================================================
+    # Stop Consumer
+    # ========================================================
+
     def stop_consuming(self) -> None:
-        """Sets the flag to stop the consuming loop gracefully."""
-        logger.info("Stop signal received for Kafka Consumer.")
+
+        logger.info(
+            "Stop signal received for Kafka Consumer."
+        )
+
         self.is_running = False
 
+
+    # ========================================================
+    # Timestamp Normalization
+    # ========================================================
+
+    @staticmethod
+    def _normalize_timestamp(
+        timestamp: Any
+    ) -> int:
+        """
+        Frontend expects Unix milliseconds.
+
+        Handles:
+        - missing timestamps
+        - seconds
+        - milliseconds
+        """
+
+        if timestamp is None:
+            return int(
+                time.time() * 1000
+            )
+
+        try:
+            value = float(timestamp)
+
+            # Likely Unix seconds
+            if value < 10_000_000_000:
+                value *= 1000
+
+            return int(value)
+
+        except (
+            TypeError,
+            ValueError
+        ):
+            return int(
+                time.time() * 1000
+            )
+
+
+    # ========================================================
+    # Raw Telemetry Broadcast
+    # ========================================================
+
+    def _broadcast_raw_sample(
+        self,
+        patient_id: str,
+        leads: List[float],
+        timestamp: Any
+    ) -> None:
+        """
+        Broadcast one ECG timestep to the browser.
+
+        The dashboard currently renders one waveform.
+        Lead II is conventionally index 1 in the
+        incoming 12-lead array.
+        """
+
+        ecg_value = float(
+            leads[1]
+            if len(leads) > 1
+            else leads[0]
+        )
+
+        stream_payload = {
+            "timestamp":
+                self._normalize_timestamp(
+                    timestamp
+                ),
+
+            "ecg_value":
+                ecg_value,
+
+            "patient_id":
+                str(patient_id),
+
+            "is_emergency":
+                False,
+
+            "lead":
+                "Lead II",
+        }
+
+        ecg_websocket_manager.publish_from_thread(
+            stream_payload
+        )
+
+
+    # ========================================================
+    # Inference Broadcast
+    # ========================================================
+
+    def _broadcast_inference_result(
+        self,
+        patient_id: str,
+        leads: List[float],
+        timestamp: Any,
+        result: Dict[str, Any]
+    ) -> None:
+
+        diagnosis = result.get(
+            "diagnosis",
+            "Unknown"
+        )
+
+        confidence = float(
+            result.get(
+                "confidence_score",
+                0.0
+            )
+        )
+
+        is_emergency = bool(
+            result.get(
+                "is_emergency",
+                False
+            )
+        )
+
+        ecg_value = float(
+            leads[1]
+            if len(leads) > 1
+            else leads[0]
+        )
+
+        stream_payload = {
+            "timestamp":
+                self._normalize_timestamp(
+                    timestamp
+                ),
+
+            "ecg_value":
+                ecg_value,
+
+            "patient_id":
+                str(patient_id),
+
+            "is_emergency":
+                is_emergency,
+
+            "anomaly_type":
+                diagnosis,
+
+            "confidence":
+                confidence,
+
+            "lead":
+                "Lead II",
+        }
+
+        ecg_websocket_manager.publish_from_thread(
+            stream_payload
+        )
+
+
+    # ========================================================
+    # Start Consumer
+    # ========================================================
+
     def start_consuming(self) -> None:
-        """
-        Continuously polls the Kafka topic for new ECG data, accumulates it, 
-        and triggers the inference pipeline when enough data is gathered.
-        """
-        logger.info(f"Subscribing to topic '{self.topic_name}'...")
-        self.consumer.subscribe([self.topic_name])
-        logger.info("Starting consumption loop. Waiting for live ECG streams...")
-        logger.info("Press Ctrl+C to stop consuming gracefully.")
+
+        logger.info(
+            "Subscribing to topic '%s'...",
+            self.topic_name
+        )
+
+        self.consumer.subscribe([
+            self.topic_name
+        ])
+
+        logger.info(
+            "Starting consumption loop. "
+            "Waiting for live ECG streams..."
+        )
+
         self.is_running = True
+
 
         try:
             while self.is_running:
-                # Poll blocks for a maximum of 1.0 seconds waiting for messages
-                msg = self.consumer.poll(timeout=1.0)
-                
+
+                msg = self.consumer.poll(
+                    timeout=1.0
+                )
+
+
                 if msg is None:
                     continue
-                    
+
+
                 if msg.error():
-                    if msg.error().code() == KafkaError._PARTITION_EOF:
-                        # End of partition reached, not an actual error
+
+                    if (
+                        KafkaError is not None
+                        and
+                        msg.error().code()
+                        == KafkaError._PARTITION_EOF
+                    ):
                         continue
-                    else:
-                        logger.error(f"Kafka error occurred: {msg.error()}")
-                        continue
+
+                    logger.error(
+                        "Kafka error occurred: %s",
+                        msg.error()
+                    )
+
+                    continue
+
 
                 try:
-                    # 1. Deserialize the payload
-                    payload = json.loads(msg.value().decode('utf-8'))
-                    patient_id = payload.get("patient_id")
-                    leads = payload.get("leads")
-                    timestamp = payload.get("timestamp")
+                    # ========================================
+                    # 1. Decode Kafka Payload
+                    # ========================================
 
-                    if not patient_id or not leads or len(leads) != 12:
-                        logger.warning("Received malformed payload. Skipping...")
+                    payload = json.loads(
+                        msg.value().decode(
+                            "utf-8"
+                        )
+                    )
+
+
+                    patient_id = payload.get(
+                        "patient_id"
+                    )
+
+                    leads = payload.get(
+                        "leads"
+                    )
+
+                    timestamp = payload.get(
+                        "timestamp"
+                    )
+
+
+                    # ========================================
+                    # 2. Validate Payload
+                    # ========================================
+
+                    if not patient_id:
+
+                        logger.warning(
+                            "Kafka payload missing "
+                            "patient_id. Skipping."
+                        )
+
                         continue
 
-                    # 2. Accumulate the timesteps
-                    self.patient_buffers[patient_id].append(leads)
 
-                    # 3. Check if we have enough data for inference (10 seconds)
-                    if len(self.patient_buffers[patient_id]) >= self.inference_window_size:
-                        logger.debug(f"Accumulated 10s of data for {patient_id}. Triggering inference...")
-                        
-                        leads_data = self.patient_buffers[patient_id]
-                        
-                        # Clear the buffer immediately to prevent infinite memory growth
-                        # In a more advanced setup, this could be a rolling window (e.g., keep last 500 steps)
-                        self.patient_buffers[patient_id] = []
-                        
-                        # 4. Pass the data to the ECGPredictor
-                        result = self.predictor.analyze_ecg(leads_data)
-                        
-                        diagnosis = result.get("diagnosis", "Unknown")
-                        confidence = result.get("confidence_score", 0.0)
-                        is_emergency = result.get("is_emergency", False)
-                        
-                        # 5. Trigger Report Generator if an anomaly is found
-                        # We don't want to generate heavy LLM reports for every 10 seconds of "Normal ECG"
-                        if diagnosis != "Normal ECG" or is_emergency:
-                            logger.warning(
-                                f"🚨 ANOMALY DETECTED for {patient_id}: {diagnosis} "
-                                f"(Confidence: {confidence:.2%}). Triggering GenAI Reports..."
-                            )
-                            
-                            # Construct a human-readable diagnosis string for the LLM
-                            clinical_finding = f"Patient {patient_id} shows signs of {diagnosis}."
-                            
-                            reports = self.report_generator.generate_reports(
-                                diagnosis=clinical_finding,
-                                confidence_score=confidence,
-                                is_emergency=is_emergency
-                            )
-                            
-                            logger.info(f"✅ GenAI Reports successfully generated for {patient_id}.")
-                            # In a full system, you would push these reports to another Kafka topic,
-                            # a database, or a WebSockets stream to alert doctors instantly.
-                            
+                    if not isinstance(
+                        leads,
+                        list
+                    ):
+
+                        logger.warning(
+                            "Kafka payload has invalid "
+                            "leads field. Skipping."
+                        )
+
+                        continue
+
+
+                    if len(leads) != 12:
+
+                        logger.warning(
+                            "Expected 12 ECG leads, "
+                            "received %d. Skipping.",
+                            len(leads)
+                        )
+
+                        continue
+
+
+                    try:
+                        leads = [
+                            float(value)
+                            for value in leads
+                        ]
+
+                    except (
+                        TypeError,
+                        ValueError
+                    ):
+
+                        logger.warning(
+                            "ECG leads contain "
+                            "non-numeric values. Skipping."
+                        )
+
+                        continue
+
+
+                    # ========================================
+                    # 3. Broadcast RAW Sample Immediately
+                    # ========================================
+
+                    self._broadcast_raw_sample(
+                        patient_id=str(
+                            patient_id
+                        ),
+
+                        leads=leads,
+
+                        timestamp=timestamp
+                    )
+
+
+                    # ========================================
+                    # 4. Add to Inference Buffer
+                    # ========================================
+
+                    self.patient_buffers[
+                        str(patient_id)
+                    ].append(
+                        leads
+                    )
+
+
+                    # ========================================
+                    # 5. Wait for 1000 Timesteps
+                    # ========================================
+
+                    if (
+                        len(
+                            self.patient_buffers[
+                                str(patient_id)
+                            ]
+                        )
+                        < self.inference_window_size
+                    ):
+                        continue
+
+
+                    logger.info(
+                        "Accumulated 1000 ECG timesteps "
+                        "for patient %s. "
+                        "Triggering inference...",
+                        patient_id
+                    )
+
+
+                    leads_data = (
+                        self.patient_buffers[
+                            str(patient_id)
+                        ][
+                            -self.inference_window_size:
+                        ]
+                    )
+
+
+                    # Clear completed window
+                    self.patient_buffers[
+                        str(patient_id)
+                    ] = []
+
+
+                    # ========================================
+                    # 6. Run ECG Model
+                    # ========================================
+
+                    result = (
+                        self.predictor.analyze_ecg(
+                            leads_data
+                        )
+                    )
+
+
+                    diagnosis = result.get(
+                        "diagnosis",
+                        "Unknown"
+                    )
+
+                    confidence = float(
+                        result.get(
+                            "confidence_score",
+                            0.0
+                        )
+                    )
+
+                    is_emergency = bool(
+                        result.get(
+                            "is_emergency",
+                            False
+                        )
+                    )
+
+
+                    logger.info(
+                        "Inference completed for %s: "
+                        "%s (%.2f%%)",
+                        patient_id,
+                        diagnosis,
+                        confidence * 100
+                    )
+
+
+                    # ========================================
+                    # 7. Broadcast AI Result
+                    # ========================================
+
+                    self._broadcast_inference_result(
+                        patient_id=str(
+                            patient_id
+                        ),
+
+                        leads=leads,
+
+                        timestamp=timestamp,
+
+                        result=result
+                    )
+
+
+                    # ========================================
+                    # 8. Generate Reports for Anomaly
+                    # ========================================
+
+                    if (
+                        diagnosis != "Normal ECG"
+                        or is_emergency
+                    ):
+
+                        logger.warning(
+                            "ANOMALY DETECTED for %s: "
+                            "%s "
+                            "(Confidence: %.2f%%). "
+                            "Triggering GenAI Reports...",
+                            patient_id,
+                            diagnosis,
+                            confidence * 100
+                        )
+
+
+                        clinical_finding = (
+                            f"Patient {patient_id} "
+                            f"shows signs of "
+                            f"{diagnosis}."
+                        )
+
+
+                        self.report_generator.generate_reports(
+                            diagnosis=clinical_finding,
+
+                            confidence_score=confidence,
+
+                            is_emergency=is_emergency
+                        )
+
+
+                        logger.info(
+                            "GenAI reports generated "
+                            "for patient %s.",
+                            patient_id
+                        )
+
+
                 except json.JSONDecodeError:
-                    logger.error("Failed to decode JSON from message value.")
-                except Exception as e:
-                    logger.error(f"Error processing incoming message: {str(e)}", exc_info=True)
+
+                    logger.error(
+                        "Failed to decode JSON "
+                        "from Kafka message."
+                    )
+
+
+                except Exception as exc:
+
+                    logger.error(
+                        "Error processing incoming "
+                        "Kafka message: %s",
+                        exc,
+                        exc_info=True
+                    )
+
 
         except KeyboardInterrupt:
-            logger.warning("KeyboardInterrupt detected. Initiating graceful shutdown of consumer...")
-            
-        except Exception as e:
-            logger.error(f"Unexpected error in consumer loop: {str(e)}", exc_info=True)
+
+            logger.warning(
+                "KeyboardInterrupt detected. "
+                "Initiating graceful shutdown..."
+            )
+
+
+        except Exception as exc:
+
+            logger.error(
+                "Unexpected error in consumer loop: %s",
+                exc,
+                exc_info=True
+            )
+
             raise
-            
+
+
         finally:
-            logger.info("Closing Kafka consumer connection...")
+
+            logger.info(
+                "Closing Kafka consumer connection..."
+            )
+
             self.consumer.close()
-            logger.info("Kafka Consumer shut down cleanly.")
+
+            logger.info(
+                "Kafka Consumer shut down cleanly."
+            )

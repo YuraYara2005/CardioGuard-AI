@@ -1,60 +1,151 @@
 import apiClient from './axiosInstance';
-import type {
-  Patient,
-  ECGAnalysisRequest,
-  AnalysisResponse,
-  DiagnosisPayload,
-  ClinicalReport,
-} from '../types';
+import type { Patient } from '../types';
 
-// ── Patient CRUD ─────────────────────────────────────────────────────────────
 
-/** Fetch all patients from the registry. */
+// ============================================================
+// Health Response
+// ============================================================
+
+export interface HealthResponse {
+  status: string;
+  predictor_ready: boolean;
+  multimodal_fusion_available: boolean;
+  loaded_ml_artifacts: string[];
+}
+
+
+// ============================================================
+// Prediction Result
+// ============================================================
+
+export interface PredictionResult {
+  diagnosis: string;
+  confidence_score: number;
+  is_emergency: boolean;
+
+  predicted_class?: string;
+  predicted_classes?: string[];
+
+  probabilities?: Record<string, number>;
+  class_probabilities?: Record<string, number>;
+
+  attention_weights?: unknown;
+}
+
+
+// ============================================================
+// Standalone ECG Types
+// ============================================================
+
+export interface StandaloneECGRequest {
+  leads_data: number[] | number[][];
+}
+
+export interface StandaloneECGResponse {
+  status: string;
+  mode: 'standalone_ecg';
+  result: PredictionResult;
+}
+
+
+// ============================================================
+// Multimodal Types
+// ============================================================
+
+export interface LabValues {
+  troponin: number;
+  'ck-mb': number;
+  bnp: number;
+  creatinine: number;
+  hba1c: number;
+}
+
+export interface MultimodalPredictionRequest {
+  leads_data: number[] | number[][];
+  image_data: number[][][];
+
+  labs: LabValues;
+
+  age: number;
+  blood_pressure: number;
+  heart_rate: number;
+  sex: string;
+  symptoms: string[];
+}
+
+export interface MultimodalPredictionResponse {
+  status: string;
+  mode: 'multimodal_fusion';
+  result: PredictionResult;
+}
+
+
+// ============================================================
+// Patient API
+// ============================================================
+
 export async function getPatients(): Promise<Patient[]> {
-  const { data } = await apiClient.get<Patient[]>('/patients');
+  const { data } =
+    await apiClient.get<Patient[]>('/patients');
+
   return data;
 }
 
-/** Fetch a single patient record by ID. */
-export async function getPatientById(patientId: string): Promise<Patient> {
-  const { data } = await apiClient.get<Patient>(`/patients/${patientId}`);
+export async function getPatientById(
+  patientId: string,
+): Promise<Patient> {
+  const { data } =
+    await apiClient.get<Patient>(
+      `/patients/${patientId}`,
+    );
+
   return data;
 }
 
-// ── ECG Analysis ─────────────────────────────────────────────────────────────
 
-/**
- * POST /report/analyze
- * Runs TCN inference on raw ECG lead data and returns AI inference +
- * RAG-generated bilingual reports if an anomaly is detected.
- */
-export async function analyzeECG(
-  payload: ECGAnalysisRequest,
-): Promise<AnalysisResponse> {
-  const { data } = await apiClient.post<AnalysisResponse>(
-    '/report/analyze',
-    payload,
-  );
+// ============================================================
+// Standalone ECG Prediction
+// ============================================================
+
+export async function predictECG(
+  payload: StandaloneECGRequest,
+): Promise<StandaloneECGResponse> {
+  const { data } =
+    await apiClient.post<StandaloneECGResponse>(
+      '/predict/ecg',
+      payload,
+    );
+
   return data;
 }
 
-// ── Report Generation ─────────────────────────────────────────────────────────
 
-/**
- * POST /report/generate
- * Directly generate RAG-backed clinical reports from a diagnosis string.
- * Useful when a diagnosis already exists and you only need the narrative.
- */
-export async function generateReport(
-  payload: DiagnosisPayload,
-): Promise<{ english_report: ClinicalReport; arabic_report: ClinicalReport }> {
-  const { data } = await apiClient.post('/report/generate', payload);
+// ============================================================
+// Multimodal Fusion Prediction
+// ============================================================
+
+export async function predictMultimodal(
+  payload: MultimodalPredictionRequest,
+): Promise<MultimodalPredictionResponse> {
+  const { data } =
+    await apiClient.post<MultimodalPredictionResponse>(
+      '/predict/multimodal',
+      payload,
+    );
+
   return data;
 }
 
-// ── Health Check ─────────────────────────────────────────────────────────────
 
-export async function getHealthStatus(): Promise<{ status: string }> {
-  const { data } = await apiClient.get<{ status: string }>('/health');
+// ============================================================
+// Health Check
+// ============================================================
+
+export async function getHealthStatus(): Promise<HealthResponse> {
+  const { data } =
+    await apiClient.get<HealthResponse>(
+      '/health',
+    );
+
   return data;
 }

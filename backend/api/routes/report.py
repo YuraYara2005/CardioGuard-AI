@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, Request
 # pyrefly: ignore [missing-import]
 from pydantic import BaseModel, Field
 
+
 # Configure module-level logger
 logger = logging.getLogger(__name__)
 

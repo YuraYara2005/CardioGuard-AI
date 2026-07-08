@@ -1,9 +1,9 @@
 import {
   useState,
-  useCallback,
   type DragEvent,
   type ChangeEvent,
 } from 'react';
+
 import {
   Upload,
   FileCode2,
@@ -13,24 +13,83 @@ import {
   Loader2,
   AlertCircle,
   ChevronRight,
+  Activity,
+  FlaskConical,
 } from 'lucide-react';
-import { analyzeECG } from '../api/patientService';
-import type { UploadFormState, PatientMetadataForm, AnalysisResponse } from '../types';
+
+import {
+  predictMultimodal,
+  type MultimodalPredictionResponse,
+} from '../api/patientService';
+
+
+// ============================================================
+// Props
+// ============================================================
 
 interface NewAnalysisTabProps {
-  onResult: (result: AnalysisResponse) => void;
+  onResult: (result: MultimodalPredictionResponse) => void;
 }
 
-const DEFAULT_META: PatientMetadataForm = {
-  patient_id:    '',
-  age:           '',
-  systolic_bp:   '',
-  diastolic_bp:  '',
-  symptoms:      '',
-  gender:        '',
+
+// ============================================================
+// Form Types
+// ============================================================
+
+interface FormState {
+  ecgFile: File | null;
+  ecgImage: File | null;
+
+  age: string;
+  bloodPressure: string;
+  heartRate: string;
+  sex: string;
+
+  symptoms: string[];
+
+  troponin: string;
+  ckMb: string;
+  bnp: string;
+  creatinine: string;
+  hba1c: string;
+}
+
+
+// ============================================================
+// Constants
+// ============================================================
+
+const SYMPTOM_OPTIONS = [
+  'Chest Pain',
+  'Shortness of Breath',
+  'Palpitations',
+  'Dizziness',
+  'Fatigue',
+];
+
+const INITIAL_FORM: FormState = {
+  ecgFile: null,
+  ecgImage: null,
+
+  age: '',
+  bloodPressure: '',
+  heartRate: '',
+  sex: '',
+
+  symptoms: [],
+
+  troponin: '',
+  ckMb: '',
+  bnp: '',
+  creatinine: '',
+  hba1c: '',
 };
 
-// ── Drag-and-drop zone ────────────────────────────────────────────────────────
+
+// ============================================================
+// Drop Zone
+// ============================================================
+
 function DropZone({
   id,
   label,
@@ -39,20 +98,27 @@ function DropZone({
   file,
   onFile,
 }: {
-  id:      string;
-  label:   string;
-  accept:  string;
-  icon:    React.ElementType;
-  file:    File | null;
-  onFile:  (f: File) => void;
+  id: string;
+  label: string;
+  accept: string;
+  icon: React.ElementType;
+  file: File | null;
+  onFile: (file: File) => void;
 }) {
   const [dragging, setDragging] = useState(false);
 
-  function handleDrop(e: DragEvent<HTMLDivElement>) {
-    e.preventDefault();
+  function handleDrop(
+    event: DragEvent<HTMLDivElement>,
+  ) {
+    event.preventDefault();
     setDragging(false);
-    const f = e.dataTransfer.files[0];
-    if (f) onFile(f);
+
+    const file =
+      event.dataTransfer.files?.[0];
+
+    if (file) {
+      onFile(file);
+    }
   }
 
   return (
@@ -60,47 +126,100 @@ function DropZone({
       id={`dropzone-${id}`}
       onDragEnter={() => setDragging(true)}
       onDragLeave={() => setDragging(false)}
-      onDragOver={(e) => e.preventDefault()}
+      onDragOver={(event) =>
+        event.preventDefault()
+      }
       onDrop={handleDrop}
-      className={`relative flex flex-col items-center justify-center gap-3 p-8 rounded-2xl border-2 border-dashed
-                  cursor-pointer transition-all duration-200
-                  ${dragging
-                    ? 'border-indigo-500 bg-indigo-500/10'
-                    : file
-                      ? 'border-emerald-500/50 bg-emerald-500/5'
-                      : 'border-white/10 bg-white/[0.02] hover:border-white/20 hover:bg-white/[0.04]'
-                  }`}
-      onClick={() => document.getElementById(`file-input-${id}`)?.click()}
+      onClick={() =>
+        document
+          .getElementById(`file-input-${id}`)
+          ?.click()
+      }
+      className={`
+        relative
+        flex flex-col
+        items-center
+        justify-center
+        gap-3
+        p-8
+        rounded-2xl
+        border-2
+        border-dashed
+        cursor-pointer
+        transition-all
+        duration-200
+
+        ${dragging
+          ? 'border-indigo-500 bg-indigo-500/10'
+          : file
+            ? 'border-emerald-500/50 bg-emerald-500/5'
+            : 'border-white/10 bg-white/[0.02] hover:border-white/20 hover:bg-white/[0.04]'
+        }
+      `}
     >
       <input
         id={`file-input-${id}`}
         type="file"
         accept={accept}
         className="hidden"
-        onChange={(e: ChangeEvent<HTMLInputElement>) => {
-          const f = e.target.files?.[0];
-          if (f) onFile(f);
+        onChange={(
+          event: ChangeEvent<HTMLInputElement>,
+        ) => {
+          const file =
+            event.target.files?.[0];
+
+          if (file) {
+            onFile(file);
+          }
         }}
       />
+
       {file ? (
         <>
           <CheckCircle2 className="w-8 h-8 text-emerald-400" />
-          <p className="text-xs text-emerald-400 font-medium text-center truncate max-w-full px-2">
+
+          <p className="
+            text-xs
+            text-emerald-400
+            font-medium
+            text-center
+            truncate
+            max-w-full
+            px-2
+          ">
             {file.name}
           </p>
+
           <p className="text-[10px] text-cg-muted">
-            {(file.size / 1024).toFixed(1)} KB · Click to replace
+            {(file.size / 1024).toFixed(1)} KB
+            {' · '}
+            Click to replace
           </p>
         </>
       ) : (
         <>
-          <div className="w-12 h-12 rounded-2xl bg-white/5 flex items-center justify-center">
+          <div className="
+            w-12
+            h-12
+            rounded-2xl
+            bg-white/5
+            flex
+            items-center
+            justify-center
+          ">
             <Icon className="w-6 h-6 text-cg-muted" />
           </div>
+
           <div className="text-center">
-            <p className="text-sm font-medium text-white">{label}</p>
-            <p className="text-xs text-cg-muted mt-0.5">Drag & drop or click to browse</p>
+            <p className="text-sm font-medium text-white">
+              {label}
+            </p>
+
+            <p className="text-xs text-cg-muted mt-0.5">
+              Drag & drop or click to browse
+            </p>
           </div>
+
           <Upload className="w-4 h-4 text-cg-muted" />
         </>
       )}
@@ -108,203 +227,880 @@ function DropZone({
   );
 }
 
-// ── Main component ─────────────────────────────────────────────────────────────
-export default function NewAnalysisTab({ onResult }: NewAnalysisTabProps) {
-  const [form, setForm] = useState<UploadFormState>({
-    ecgFile:       null,
-    labReportImage: null,
-    ecgArray:      [],
-    metadata:      DEFAULT_META,
-  });
 
-  const [loading,   setLoading]   = useState(false);
-  const [error,     setError]     = useState('');
-  const [parseWarn, setParseWarn] = useState('');
+// ============================================================
+// Main Component
+// ============================================================
 
-  const updateMeta = useCallback(
-    (key: keyof PatientMetadataForm, value: string) =>
-      setForm((prev) => ({ ...prev, metadata: { ...prev.metadata, [key]: value } })),
-    [],
-  );
+export default function NewAnalysisTab({
+  onResult,
+}: NewAnalysisTabProps) {
+  const [form, setForm] =
+    useState<FormState>(INITIAL_FORM);
 
-  // Parse ECG JSON file → float array
-  async function parseECGFile(file: File): Promise<number[]> {
+  const [loading, setLoading] =
+    useState(false);
+
+  const [error, setError] =
+    useState('');
+
+  const [warning, setWarning] =
+    useState('');
+
+
+  // ==========================================================
+  // Generic Field Update
+  // ==========================================================
+
+  function updateField<K extends keyof FormState>(
+    key: K,
+    value: FormState[K],
+  ) {
+    setForm((previous) => ({
+      ...previous,
+      [key]: value,
+    }));
+  }
+
+
+  // ==========================================================
+  // Parse ECG JSON
+  // ==========================================================
+
+  async function parseECGFile(
+    file: File,
+  ): Promise<number[] | number[][]> {
     const text = await file.text();
+
+    let parsed: unknown;
+
     try {
-      const parsed = JSON.parse(text);
-      if (Array.isArray(parsed)) return parsed.flat().map(Number);
-      if (parsed.leads) return (parsed.leads as number[][]).flat().map(Number);
-      throw new Error('Unrecognised JSON structure');
+      parsed = JSON.parse(text);
     } catch {
-      throw new Error('ECG file must be a JSON array or { leads: [...] }');
+      throw new Error(
+        'ECG file contains invalid JSON.',
+      );
+    }
+
+    if (Array.isArray(parsed)) {
+      return parsed as number[] | number[][];
+    }
+
+    if (
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      'leads_data' in parsed
+    ) {
+      const value = (
+        parsed as {
+          leads_data: unknown;
+        }
+      ).leads_data;
+
+      if (Array.isArray(value)) {
+        return value as number[] | number[][];
+      }
+    }
+
+    if (
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      'leads' in parsed
+    ) {
+      const value = (
+        parsed as {
+          leads: unknown;
+        }
+      ).leads;
+
+      if (Array.isArray(value)) {
+        return value as number[] | number[][];
+      }
+    }
+
+    throw new Error(
+      'ECG JSON must be an array, { "leads_data": [...] }, or { "leads": [...] }.',
+    );
+  }
+
+
+  // ==========================================================
+  // Convert ECG Image -> 224 x 224 x 3
+  // ==========================================================
+
+  async function imageFileToArray(
+    file: File,
+  ): Promise<number[][][]> {
+    if (!file.type.startsWith('image/')) {
+      throw new Error(
+        'ECG image must be JPG, JPEG, PNG, or another browser-supported image format.',
+      );
+    }
+
+    const objectUrl =
+      URL.createObjectURL(file);
+
+    try {
+      const image =
+        await new Promise<HTMLImageElement>(
+          (resolve, reject) => {
+            const img = new Image();
+
+            img.onload = () =>
+              resolve(img);
+
+            img.onerror = () =>
+              reject(
+                new Error(
+                  'Unable to read ECG image.',
+                ),
+              );
+
+            img.src = objectUrl;
+          },
+        );
+
+      const canvas =
+        document.createElement('canvas');
+
+      canvas.width = 224;
+      canvas.height = 224;
+
+      const context =
+        canvas.getContext('2d');
+
+      if (!context) {
+        throw new Error(
+          'Browser could not create image-processing canvas.',
+        );
+      }
+
+      context.drawImage(
+        image,
+        0,
+        0,
+        224,
+        224,
+      );
+
+      const imageData =
+        context.getImageData(
+          0,
+          0,
+          224,
+          224,
+        );
+
+      const result: number[][][] = [];
+
+      for (let y = 0; y < 224; y += 1) {
+        const row: number[][] = [];
+
+        for (let x = 0; x < 224; x += 1) {
+          const index =
+            (y * 224 + x) * 4;
+
+          const red =
+            imageData.data[index];
+
+          const green =
+            imageData.data[index + 1];
+
+          const blue =
+            imageData.data[index + 2];
+
+          /*
+           * IMPORTANT:
+           * Send raw RGB values 0..255.
+           *
+           * Do not divide by 255 here unless the ML team's
+           * notebook explicitly normalized images before
+           * image_feature_extractor.keras.
+           */
+          row.push([
+            red,
+            green,
+            blue,
+          ]);
+        }
+
+        result.push(row);
+      }
+
+      return result;
+    } finally {
+      URL.revokeObjectURL(objectUrl);
     }
   }
 
+
+  // ==========================================================
+  // Symptom Toggle
+  // ==========================================================
+
+  function toggleSymptom(
+    symptom: string,
+  ) {
+    setForm((previous) => {
+      const alreadySelected =
+        previous.symptoms.includes(symptom);
+
+      return {
+        ...previous,
+
+        symptoms: alreadySelected
+          ? previous.symptoms.filter(
+            (item) => item !== symptom,
+          )
+          : [
+            ...previous.symptoms,
+            symptom,
+          ],
+      };
+    });
+  }
+
+
+  // ==========================================================
+  // Validation
+  // ==========================================================
+
+  function validateForm(): void {
+    if (!form.ecgFile) {
+      throw new Error(
+        'Please upload an ECG JSON file.',
+      );
+    }
+
+    if (!form.ecgImage) {
+      throw new Error(
+        'Please upload an ECG image.',
+      );
+    }
+
+    if (!form.age) {
+      throw new Error(
+        'Age is required.',
+      );
+    }
+
+    if (!form.bloodPressure) {
+      throw new Error(
+        'Blood pressure is required.',
+      );
+    }
+
+    if (!form.heartRate) {
+      throw new Error(
+        'Heart rate is required.',
+      );
+    }
+
+    if (!form.sex) {
+      throw new Error(
+        'Sex is required.',
+      );
+    }
+
+    if (!form.troponin) {
+      throw new Error(
+        'Troponin value is required.',
+      );
+    }
+
+    if (!form.ckMb) {
+      throw new Error(
+        'CK-MB value is required.',
+      );
+    }
+
+    if (!form.bnp) {
+      throw new Error(
+        'BNP value is required.',
+      );
+    }
+
+    if (!form.creatinine) {
+      throw new Error(
+        'Creatinine value is required.',
+      );
+    }
+
+    if (!form.hba1c) {
+      throw new Error(
+        'HbA1c value is required.',
+      );
+    }
+  }
+
+
+  // ==========================================================
+  // Submit
+  // ==========================================================
+
   async function handleSubmit() {
     setError('');
-    setParseWarn('');
-    const { metadata, ecgFile } = form;
+    setWarning('');
 
-    if (!metadata.patient_id.trim()) { setError('Patient ID is required.'); return; }
-    if (!ecgFile) { setError('Please upload an ECG data file.'); return; }
-
-    setLoading(true);
     try {
-      const leads = await parseECGFile(ecgFile);
-      if (leads.length === 0) throw new Error('ECG array is empty after parsing.');
-      if (leads.length < 100) setParseWarn(`Only ${leads.length} samples found — accuracy may be reduced.`);
+      validateForm();
 
-      const result = await analyzeECG({ patient_id: metadata.patient_id, leads });
-      onResult(result);
+      setLoading(true);
+
+      const leadsData =
+        await parseECGFile(
+          form.ecgFile!,
+        );
+
+      const imageData =
+        await imageFileToArray(
+          form.ecgImage!,
+        );
+
+      const age =
+        Number(form.age);
+
+      const bloodPressure =
+        Number(form.bloodPressure);
+
+      const heartRate =
+        Number(form.heartRate);
+
+      const troponin =
+        Number(form.troponin);
+
+      const ckMb =
+        Number(form.ckMb);
+
+      const bnp =
+        Number(form.bnp);
+
+      const creatinine =
+        Number(form.creatinine);
+
+      const hba1c =
+        Number(form.hba1c);
+
+      const numericValues = [
+        age,
+        bloodPressure,
+        heartRate,
+        troponin,
+        ckMb,
+        bnp,
+        creatinine,
+        hba1c,
+      ];
+
+      if (
+        numericValues.some(
+          (value) => !Number.isFinite(value),
+        )
+      ) {
+        throw new Error(
+          'All numeric fields must contain valid numbers.',
+        );
+      }
+
+      setWarning(
+        'Running multimodal fusion inference. This may take a moment.',
+      );
+
+      const response =
+        await predictMultimodal({
+          leads_data: leadsData,
+
+          image_data: imageData,
+
+          labs: {
+            troponin,
+            'ck-mb': ckMb,
+            bnp,
+            creatinine,
+            hba1c,
+          },
+
+          age,
+          blood_pressure: bloodPressure,
+          heart_rate: heartRate,
+          sex: form.sex,
+          symptoms: form.symptoms,
+        });
+
+      setWarning('');
+
+      onResult(response);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Analysis failed');
+      setWarning('');
+
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'Multimodal analysis failed.',
+      );
     } finally {
       setLoading(false);
     }
   }
 
+
+  // ==========================================================
+  // Render
+  // ==========================================================
+
   return (
     <div className="space-y-6 animate-fade-in-up">
+
+      {/* Header */}
+
       <div>
-        <h2 className="text-lg font-semibold text-white">New Multi-Modal Analysis</h2>
+        <h2 className="text-lg font-semibold text-white">
+          New Multi-Modal Analysis
+        </h2>
+
         <p className="text-sm text-cg-muted mt-0.5">
-          Upload ECG data and patient metadata for TCN inference + RAG report generation.
+          ECG signal + ECG image + laboratory values +
+          patient metadata → multimodal fusion inference.
         </p>
       </div>
 
-      {/* Alerts */}
+
+      {/* Error */}
+
       {error && (
-        <div className="flex items-center gap-2 text-red-400 bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3 text-sm">
-          <AlertCircle className="w-4 h-4 flex-shrink-0" />{error}
-        </div>
-      )}
-      {parseWarn && (
-        <div className="flex items-center gap-2 text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-xl px-4 py-3 text-sm">
-          <AlertCircle className="w-4 h-4 flex-shrink-0" />{parseWarn}
+        <div className="
+          flex
+          items-center
+          gap-2
+          text-red-400
+          bg-red-500/10
+          border
+          border-red-500/20
+          rounded-xl
+          px-4
+          py-3
+          text-sm
+        ">
+          <AlertCircle className="w-4 h-4 flex-shrink-0" />
+          {error}
         </div>
       )}
 
-      {/* Upload zones */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {/* Zone 1: ECG Array */}
+
+      {/* Warning */}
+
+      {warning && (
+        <div className="
+          flex
+          items-center
+          gap-2
+          text-amber-400
+          bg-amber-500/10
+          border
+          border-amber-500/20
+          rounded-xl
+          px-4
+          py-3
+          text-sm
+        ">
+          <Loader2 className="w-4 h-4 animate-spin flex-shrink-0" />
+          {warning}
+        </div>
+      )}
+
+
+      {/* Uploads */}
+
+      <div className="
+        grid
+        grid-cols-1
+        md:grid-cols-2
+        gap-4
+      ">
+
         <div>
-          <p className="text-xs font-semibold text-cg-muted uppercase tracking-wide mb-2 flex items-center gap-1.5">
-            <span className="w-5 h-5 rounded-full bg-indigo-600/30 inline-flex items-center justify-center text-indigo-400 text-[10px]">1</span>
-            ECG Array Data (JSON)
+          <p className="
+            text-xs
+            font-semibold
+            text-cg-muted
+            uppercase
+            tracking-wide
+            mb-2
+          ">
+            1 · ECG Array Data
           </p>
+
           <DropZone
             id="ecg-array"
-            label="ECG Lead File (.json)"
-            accept=".json,.txt"
+            label="ECG Signal (.json)"
+            accept=".json"
             icon={FileCode2}
             file={form.ecgFile}
-            onFile={(f) => setForm((p) => ({ ...p, ecgFile: f }))}
+            onFile={(file) =>
+              updateField(
+                'ecgFile',
+                file,
+              )
+            }
           />
         </div>
 
-        {/* Zone 2: Lab Report Image */}
+
         <div>
-          <p className="text-xs font-semibold text-cg-muted uppercase tracking-wide mb-2 flex items-center gap-1.5">
-            <span className="w-5 h-5 rounded-full bg-cyan-600/30 inline-flex items-center justify-center text-cyan-400 text-[10px]">2</span>
-            Lab Report Image (OCR)
+          <p className="
+            text-xs
+            font-semibold
+            text-cg-muted
+            uppercase
+            tracking-wide
+            mb-2
+          ">
+            2 · ECG Image
           </p>
+
           <DropZone
-            id="lab-image"
-            label="Lab Report (.jpg / .png / .pdf)"
-            accept="image/*,.pdf"
+            id="ecg-image"
+            label="ECG Image (.jpg / .png)"
+            accept="image/*"
             icon={ImagePlus}
-            file={form.labReportImage}
-            onFile={(f) => setForm((p) => ({ ...p, labReportImage: f }))}
+            file={form.ecgImage}
+            onFile={(file) =>
+              updateField(
+                'ecgImage',
+                file,
+              )
+            }
           />
         </div>
+
       </div>
 
-      {/* Zone 3: Patient Metadata form */}
+
+      {/* Laboratory Values */}
+
       <div className="glass-card p-6">
-        <p className="text-xs font-semibold text-cg-muted uppercase tracking-wide mb-4 flex items-center gap-1.5">
-          <span className="w-5 h-5 rounded-full bg-emerald-600/30 inline-flex items-center justify-center text-emerald-400 text-[10px]">3</span>
-          <User className="w-3.5 h-3.5" />
-          Patient Metadata
+        <p className="
+          text-xs
+          font-semibold
+          text-cg-muted
+          uppercase
+          tracking-wide
+          mb-4
+          flex
+          items-center
+          gap-2
+        ">
+          <FlaskConical className="w-4 h-4" />
+          Laboratory Values
         </p>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+
+        <div className="
+          grid
+          grid-cols-1
+          sm:grid-cols-2
+          lg:grid-cols-5
+          gap-4
+        ">
+
           <div>
-            <label className="block text-xs text-cg-muted mb-1.5">Patient ID *</label>
+            <label className="block text-xs text-cg-muted mb-1.5">
+              Troponin *
+            </label>
+
             <input
-              id="meta-patient-id"
-              type="text"
-              placeholder="PTB-XL-001"
-              value={form.metadata.patient_id}
-              onChange={(e) => updateMeta('patient_id', e.target.value)}
+              type="number"
+              step="any"
+              value={form.troponin}
+              onChange={(event) =>
+                updateField(
+                  'troponin',
+                  event.target.value,
+                )
+              }
               className="input-field"
             />
           </div>
+
+
           <div>
-            <label className="block text-xs text-cg-muted mb-1.5">Gender</label>
-            <select
-              id="meta-gender"
-              value={form.metadata.gender}
-              onChange={(e) => updateMeta('gender', e.target.value)}
-              className="input-field"
-            >
-              <option value="">Select…</option>
-              <option value="Male">Male</option>
-              <option value="Female">Female</option>
-              <option value="Other">Other</option>
-            </select>
-          </div>
-          <div>
-            <label className="block text-xs text-cg-muted mb-1.5">Age (years)</label>
+            <label className="block text-xs text-cg-muted mb-1.5">
+              CK-MB *
+            </label>
+
             <input
-              id="meta-age"
+              type="number"
+              step="any"
+              value={form.ckMb}
+              onChange={(event) =>
+                updateField(
+                  'ckMb',
+                  event.target.value,
+                )
+              }
+              className="input-field"
+            />
+          </div>
+
+
+          <div>
+            <label className="block text-xs text-cg-muted mb-1.5">
+              BNP *
+            </label>
+
+            <input
+              type="number"
+              step="any"
+              value={form.bnp}
+              onChange={(event) =>
+                updateField(
+                  'bnp',
+                  event.target.value,
+                )
+              }
+              className="input-field"
+            />
+          </div>
+
+
+          <div>
+            <label className="block text-xs text-cg-muted mb-1.5">
+              Creatinine *
+            </label>
+
+            <input
+              type="number"
+              step="any"
+              value={form.creatinine}
+              onChange={(event) =>
+                updateField(
+                  'creatinine',
+                  event.target.value,
+                )
+              }
+              className="input-field"
+            />
+          </div>
+
+
+          <div>
+            <label className="block text-xs text-cg-muted mb-1.5">
+              HbA1c *
+            </label>
+
+            <input
+              type="number"
+              step="any"
+              value={form.hba1c}
+              onChange={(event) =>
+                updateField(
+                  'hba1c',
+                  event.target.value,
+                )
+              }
+              className="input-field"
+            />
+          </div>
+
+        </div>
+      </div>
+
+
+      {/* Metadata */}
+
+      <div className="glass-card p-6">
+        <p className="
+          text-xs
+          font-semibold
+          text-cg-muted
+          uppercase
+          tracking-wide
+          mb-4
+          flex
+          items-center
+          gap-2
+        ">
+          <User className="w-4 h-4" />
+          Patient Metadata
+        </p>
+
+        <div className="
+          grid
+          grid-cols-1
+          sm:grid-cols-2
+          gap-4
+        ">
+
+          <div>
+            <label className="block text-xs text-cg-muted mb-1.5">
+              Age *
+            </label>
+
+            <input
               type="number"
               min={0}
               max={130}
-              placeholder="52"
-              value={form.metadata.age}
-              onChange={(e) => updateMeta('age', e.target.value)}
+              value={form.age}
+              onChange={(event) =>
+                updateField(
+                  'age',
+                  event.target.value,
+                )
+              }
               className="input-field"
+              placeholder="52"
             />
           </div>
+
+
           <div>
-            <label className="block text-xs text-cg-muted mb-1.5">Blood Pressure (mmHg)</label>
-            <div className="flex gap-2">
+            <label className="block text-xs text-cg-muted mb-1.5">
+              Sex *
+            </label>
+
+            <select
+              value={form.sex}
+              onChange={(event) =>
+                updateField(
+                  'sex',
+                  event.target.value,
+                )
+              }
+              className="input-field"
+            >
+              <option value="">
+                Select…
+              </option>
+
+              <option value="Female">
+                Female
+              </option>
+
+              <option value="Male">
+                Male
+              </option>
+            </select>
+          </div>
+
+
+          <div>
+            <label className="block text-xs text-cg-muted mb-1.5">
+              Blood Pressure *
+            </label>
+
+            <input
+              type="number"
+              value={form.bloodPressure}
+              onChange={(event) =>
+                updateField(
+                  'bloodPressure',
+                  event.target.value,
+                )
+              }
+              className="input-field"
+              placeholder="120"
+            />
+          </div>
+
+
+          <div>
+            <label className="
+              block
+              text-xs
+              text-cg-muted
+              mb-1.5
+            ">
+              Heart Rate *
+            </label>
+
+            <div className="relative">
+              <Activity className="
+                absolute
+                left-3
+                top-1/2
+                -translate-y-1/2
+                w-4
+                h-4
+                text-cg-muted
+              " />
+
               <input
-                id="meta-systolic"
                 type="number"
-                placeholder="120"
-                value={form.metadata.systolic_bp}
-                onChange={(e) => updateMeta('systolic_bp', e.target.value)}
-                className="input-field"
-              />
-              <span className="flex items-center text-cg-muted text-sm">/</span>
-              <input
-                id="meta-diastolic"
-                type="number"
-                placeholder="80"
-                value={form.metadata.diastolic_bp}
-                onChange={(e) => updateMeta('diastolic_bp', e.target.value)}
-                className="input-field"
+                value={form.heartRate}
+                onChange={(event) =>
+                  updateField(
+                    'heartRate',
+                    event.target.value,
+                  )
+                }
+                className="input-field pl-10"
+                placeholder="75"
               />
             </div>
           </div>
-          <div className="sm:col-span-2">
-            <label className="block text-xs text-cg-muted mb-1.5">Chief Symptoms</label>
-            <textarea
-              id="meta-symptoms"
-              rows={3}
-              placeholder="e.g., chest pain, shortness of breath, palpitations…"
-              value={form.metadata.symptoms}
-              onChange={(e) => updateMeta('symptoms', e.target.value)}
-              className="input-field resize-none"
-            />
+
+        </div>
+
+
+        {/* Symptoms */}
+
+        <div className="mt-5">
+          <label className="
+            block
+            text-xs
+            text-cg-muted
+            mb-2
+          ">
+            Symptoms
+          </label>
+
+          <div className="
+            flex
+            flex-wrap
+            gap-2
+          ">
+            {SYMPTOM_OPTIONS.map(
+              (symptom) => {
+                const selected =
+                  form.symptoms.includes(symptom);
+
+                return (
+                  <button
+                    key={symptom}
+                    type="button"
+                    onClick={() =>
+                      toggleSymptom(symptom)
+                    }
+                    className={`
+                      px-3
+                      py-2
+                      rounded-xl
+                      text-xs
+                      border
+                      transition-all
+
+                      ${selected
+                        ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-300'
+                        : 'bg-white/[0.02] border-white/10 text-cg-muted hover:border-white/20'
+                      }
+                    `}
+                  >
+                    {symptom}
+                  </button>
+                );
+              },
+            )}
           </div>
         </div>
+
       </div>
 
+
       {/* Submit */}
+
       <div className="flex justify-end">
         <button
           id="btn-run-analysis"
+          type="button"
           onClick={handleSubmit}
           disabled={loading}
           className="btn-primary"
@@ -314,9 +1110,13 @@ export default function NewAnalysisTab({ onResult }: NewAnalysisTabProps) {
           ) : (
             <ChevronRight className="w-4 h-4" />
           )}
-          {loading ? 'Analysing…' : 'Run Analysis'}
+
+          {loading
+            ? 'Running Fusion Analysis…'
+            : 'Run Multi-Modal Analysis'}
         </button>
       </div>
+
     </div>
   );
 }
