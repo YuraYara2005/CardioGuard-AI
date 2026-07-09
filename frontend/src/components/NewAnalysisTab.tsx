@@ -1,5 +1,6 @@
 import {
   useState,
+  useEffect,
   type DragEvent,
   type ChangeEvent,
 } from 'react';
@@ -19,8 +20,10 @@ import {
 
 import {
   predictMultimodal,
+  getPatients,
   type MultimodalPredictionResponse,
 } from '../api/patientService';
+import type { Patient } from '../types';
 
 
 // ============================================================
@@ -37,6 +40,7 @@ interface NewAnalysisTabProps {
 // ============================================================
 
 interface FormState {
+  patientId: string;
   ecgFile: File | null;
   ecgImage: File | null;
 
@@ -68,6 +72,7 @@ const SYMPTOM_OPTIONS = [
 ];
 
 const INITIAL_FORM: FormState = {
+  patientId: '',
   ecgFile: null,
   ecgImage: null,
 
@@ -246,6 +251,40 @@ export default function NewAnalysisTab({
 
   const [warning, setWarning] =
     useState('');
+
+  const [patients, setPatients] = useState<Patient[]>([]);
+  const [loadingPatients, setLoadingPatients] = useState(false);
+  const [patientsError, setPatientsError] = useState('');
+
+  useEffect(() => {
+    async function loadPatients() {
+      setLoadingPatients(true);
+      try {
+        const data = await getPatients();
+        setPatients(data);
+      } catch (err) {
+        setPatientsError('Could not load patient registry.');
+      } finally {
+        setLoadingPatients(false);
+      }
+    }
+    loadPatients();
+  }, []);
+
+  function handlePatientChange(patientId: string) {
+    setForm((prev) => {
+      const selected = patients.find((p) => p.id === patientId);
+      if (!selected) {
+        return { ...prev, patientId, age: '', sex: '' };
+      }
+      return {
+        ...prev,
+        patientId,
+        age: selected.age.toString(),
+        sex: selected.gender === 'Female' ? 'Female' : 'Male',
+      };
+    });
+  }
 
 
   // ==========================================================
@@ -466,6 +505,12 @@ export default function NewAnalysisTab({
   // ==========================================================
 
   function validateForm(): void {
+    if (!form.patientId) {
+      throw new Error(
+        'Please select a registered patient.',
+      );
+    }
+
     if (!form.ecgFile) {
       throw new Error(
         'Please upload an ECG JSON file.',
@@ -648,6 +693,7 @@ export default function NewAnalysisTab({
 
       const response =
         await predictMultimodal({
+          patient_id: form.patientId,
           leads_data: leadsData,
 
           image_data: imageData,
@@ -969,6 +1015,38 @@ export default function NewAnalysisTab({
           sm:grid-cols-2
           gap-4
         ">
+
+          {/* Patient Selection Dropdown */}
+          <div className="sm:col-span-2 mb-2">
+            <label className="block text-xs text-cg-muted mb-1.5">
+              Registered Patient *
+            </label>
+            <div className="relative">
+              <select
+                value={form.patientId}
+                onChange={(e) => handlePatientChange(e.target.value)}
+                disabled={loadingPatients}
+                className="input-field w-full appearance-none pr-10"
+              >
+                <option value="">
+                  {loadingPatients ? 'Loading patients...' : 'Select a patient...'}
+                </option>
+                {patients.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.id} — {p.name}
+                  </option>
+                ))}
+              </select>
+              <div className="absolute inset-y-0 right-0 flex items-center px-3 pointer-events-none text-cg-muted">
+                <svg className="w-4 h-4 fill-current" viewBox="0 0 20 20">
+                  <path d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" />
+                </svg>
+              </div>
+            </div>
+            {patientsError && (
+              <p className="text-red-400 text-xs mt-1">{patientsError}</p>
+            )}
+          </div>
 
           <div>
             <label className="block text-xs text-cg-muted mb-1.5">

@@ -1,56 +1,46 @@
 import json
+#prelify
 # pyrefly: ignore [missing-import]
 import wfdb
-# pyrefly: ignore [missing-import]
-import matplotlib.pyplot as plt
 from pathlib import Path
 
-# Use a real PTB-XL record already on your computer
-record_path = r"D:\CardioGuardAI\data\ptb-xl\records100\01000\01000_lr"
+records_dir = Path("data/ptb-xl/records100/01000")
 
-# Read the real 12-lead ECG
-record = wfdb.rdrecord(record_path)
-signal = record.p_signal  # shape should be (1000, 12)
+hea_files = list(records_dir.glob("*.hea"))
 
-print("ECG shape:", signal.shape)
-print("Lead names:", record.sig_name)
+if not hea_files:
+    raise FileNotFoundError(
+        f"No .hea files found inside {records_dir}"
+    )
 
-# Create output folder
-out = Path("demo_files")
-out.mkdir(exist_ok=True)
+record_path = hea_files[0].with_suffix("")
 
-# --------------------------------------------------
-# 1. ECG JSON
-# --------------------------------------------------
-# Save as nested [1000][12] array
-ecg_json = signal.tolist()
+print(f"Loading PTB-XL record: {record_path}")
 
-with open(out / "ptbxl_ecg.json", "w", encoding="utf-8") as f:
-    json.dump(ecg_json, f)
+record = wfdb.rdrecord(str(record_path))
 
-# --------------------------------------------------
-# 2. ECG IMAGE
-# --------------------------------------------------
-plt.figure(figsize=(14, 6))
+signal = record.p_signal
 
-# Plot Lead II if available, otherwise second lead
-lead_index = 1
-plt.plot(signal[:, lead_index])
+if signal is None:
+    raise ValueError("Record contains no physical ECG signal.")
 
-plt.title("PTB-XL ECG - Lead II")
-plt.xlabel("Sample")
-plt.ylabel("Amplitude (mV)")
-plt.grid(True)
-plt.tight_layout()
+print("Original shape:", signal.shape)
 
-plt.savefig(
-    out / "ptbxl_ecg.png",
-    dpi=200,
-    bbox_inches="tight"
-)
+# Exactly 1000 timesteps
+signal = signal[:1000]
 
-plt.close()
+# Ensure 12 leads
+if signal.shape[1] != 12:
+    raise ValueError(
+        f"Expected 12 leads, got {signal.shape[1]}"
+    )
 
-print("Created:")
-print(out / "ptbxl_ecg.json")
-print(out / "ptbxl_ecg.png")
+output = signal.tolist()
+
+output_path = Path("demo_ecg.json")
+
+with open(output_path, "w", encoding="utf-8") as f:
+    json.dump(output, f)
+
+print(f"Created: {output_path}")
+print(f"Final shape: {len(output)} x {len(output[0])}")

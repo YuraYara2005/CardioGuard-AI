@@ -57,12 +57,23 @@ class GeminiLLMProvider:
             logger.addHandler(handler)
         logger.setLevel(log_level)
 
-        load_dotenv()
+        # Ensure we load from the absolute project root and override stale keys
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+        env_path = os.path.join(project_root, ".env")
+        load_dotenv(dotenv_path=env_path, override=True)
+
+        # Check for conflicting or legacy keys
+        legacy_keys = ["GOOGLE_API_KEY", "GOOGLE_GENAI_API_KEY"]
+        for lk in legacy_keys:
+            if os.getenv(lk):
+                logger.warning(f"Found conflicting environment variable {lk}. CardioGuard uses GEMINI_API_KEY exclusively.")
 
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
         if not self.api_key:
             logger.critical("No Gemini API key provided. Ensure GEMINI_API_KEY is set in your .env file.")
             raise ValueError("Missing Gemini API Key. Cannot initialize LLM Provider.")
+        else:
+            logger.info(f"Loaded GEMINI_API_KEY (Length: {len(self.api_key)}, Suffix: ...{self.api_key[-4:]})")
 
         self.model_name = model_name
 
@@ -107,7 +118,11 @@ class GeminiLLMProvider:
 
         except Exception as e:
             raw_error = str(e)
-            logger.error(f"Gemini API call failed: {raw_error}")
+            
+            # Phase 3: Add SERVER-SIDE diagnostic logging of the upstream exception.
+            # We log the raw error and exception type so developers can diagnose
+            # rate limits vs quota exhaustion vs model availability.
+            logger.error(f"Gemini API call failed (Type: {type(e).__name__}): {raw_error}")
 
             # Classify the error type for the caller without
             # leaking raw provider details to end users.

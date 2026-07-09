@@ -61,6 +61,7 @@ export interface LabValues {
 }
 
 export interface MultimodalPredictionRequest {
+  patient_id?: string;
   leads_data: number[] | number[][];
   image_data: number[][][];
 
@@ -76,6 +77,7 @@ export interface MultimodalPredictionRequest {
 export interface MultimodalPredictionResponse {
   status: string;
   mode: 'multimodal_fusion';
+  patient_id?: string;
   result: PredictionResult;
 }
 

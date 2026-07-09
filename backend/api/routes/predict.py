@@ -57,6 +57,9 @@ class MultimodalPredictionRequest(BaseModel):
     # Exactly five lab values
     labs: LabValues
 
+    # Patient identity (optional for backward compatibility)
+    patient_id: str = Field(default=None)
+
     # Metadata
     age: float
     blood_pressure: float
@@ -216,6 +219,7 @@ async def predict_multimodal(
         return {
             "status": "success",
             "mode": "multimodal_fusion",
+            "patient_id": payload.patient_id,
             "result": result
         }
 

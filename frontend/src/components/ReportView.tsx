@@ -20,6 +20,8 @@ import {
   type GeneratedReports,
 } from '../api/reportService';
 
+import { DoctorReportRenderer } from './DoctorReportRenderer';
+
 interface ReportViewProps {
   result: MultimodalPredictionResponse;
 }
@@ -100,8 +102,8 @@ export default function ReportView({
         diagnosis: result.result.diagnosis,
         confidence_score: result.result.confidence_score,
         is_emergency: result.result.is_emergency,
-        doctor_report: reports.doctor_report,
-        patient_report: reports.patient_report,
+        doctor_report: reports.doctor_report || '',
+        patient_report: reports.patient_report || '',
         generated_at: new Date().toISOString(),
       };
 
@@ -468,14 +470,12 @@ export default function ReportView({
         {genReport && (
           <div className="space-y-4">
             {genReport.doctor_report && (
-              <div>
-                <p className="text-xs font-semibold text-indigo-400 uppercase tracking-wide mb-2">
-                  Doctor&apos;s Clinical Report (English)
-                </p>
-
-                <div className="bg-white/[0.03] border border-white/10 rounded-xl p-4 text-sm text-cg-text leading-relaxed whitespace-pre-wrap">
-                  {genReport.doctor_report}
-                </div>
+              <div className="print:block print:w-full">
+                <DoctorReportRenderer 
+                  reportText={genReport.doctor_report}
+                  result={result}
+                  patientId={getCurrentAnalysisPatientId()}
+                />
               </div>
             )}
 
