@@ -11,6 +11,34 @@ from dotenv import load_dotenv
 # Configure module-level logger
 logger = logging.getLogger(__name__)
 
+
+# ============================================================
+# Typed Exceptions
+# ============================================================
+
+class ReportGenerationError(Exception):
+    """
+    Raised when the LLM provider cannot produce a report.
+
+    Attributes:
+        status_code: Suggested HTTP status to return to the
+                     caller (429 for quota, 503 for service
+                     unavailability, 500 for unexpected errors).
+        safe_message: A short, provider-detail-free message
+                      safe to surface to end-users.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        status_code: int = 500,
+        safe_message: str = "تعذر إنشاء التقرير الذكي مؤقتًا. حاول مرة أخرى لاحقًا.",
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.safe_message = safe_message
+
+
 class GeminiLLMProvider:
     """
     A client wrapper for the Google Gemini API using the modern google-genai SDK.
@@ -63,13 +91,44 @@ class GeminiLLMProvider:
             
             if not response.text:
                 logger.error("Response blocked or empty.")
-                return "Error: The model returned an empty response. This could be due to safety filters or a network issue."
+                raise ReportGenerationError(
+                    message="Gemini returned an empty or blocked response.",
+                    status_code=503,
+                    safe_message="تعذر إنشاء التقرير الذكي مؤقتًا. حاول مرة أخرى لاحقًا.",
+                )
                 
             generated_text = response.text
             logger.info(f"Successfully generated response (Length: {len(generated_text)} characters).")
             return generated_text
 
+        except ReportGenerationError:
+            # Already typed — propagate as-is
+            raise
+
         except Exception as e:
-            error_msg = f"Failed to generate response from modern Gemini API: {str(e)}"
-            logger.error(error_msg)
-            return f"Error: Unable to generate LLM response. {str(e)}"
+            raw_error = str(e)
+            logger.error(f"Gemini API call failed: {raw_error}")
+
+            # Classify the error type for the caller without
+            # leaking raw provider details to end users.
+            lower = raw_error.lower()
+
+            if "429" in raw_error or "quota" in lower or "rate" in lower:
+                raise ReportGenerationError(
+                    message=f"Gemini quota exhausted: {raw_error}",
+                    status_code=429,
+                    safe_message="تعذر إنشاء التقرير الذكي مؤقتًا. حاول مرة أخرى لاحقًا.",
+                ) from e
+
+            if "503" in raw_error or "unavailable" in lower or "overload" in lower:
+                raise ReportGenerationError(
+                    message=f"Gemini service unavailable: {raw_error}",
+                    status_code=503,
+                    safe_message="تعذر إنشاء التقرير الذكي مؤقتًا. حاول مرة أخرى لاحقًا.",
+                ) from e
+
+            raise ReportGenerationError(
+                message=f"Unexpected Gemini error: {raw_error}",
+                status_code=500,
+                safe_message="تعذر إنشاء التقرير الذكي مؤقتًا. حاول مرة أخرى لاحقًا.",
+            ) from e

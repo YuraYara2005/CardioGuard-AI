@@ -17,13 +17,17 @@ const MOCK_USERS: Record<string, AuthUser & { password: string }> = {
     password: 'doctor123',
     avatarUrl: undefined,
   },
+
   'patient@cardioguard.ai': {
     id: 'usr-002',
-    name: 'أحمد محمد الحربي',
+    name: 'أحمد حسن',
     email: 'patient@cardioguard.ai',
     role: 'Patient',
     password: 'patient123',
     avatarUrl: undefined,
+
+    // Links this login to Ahmed Hassan in Patient Registry
+    patientId: 'P001',
   },
 };
 

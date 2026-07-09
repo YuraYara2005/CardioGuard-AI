@@ -7,6 +7,8 @@ from backend.ai.prompts.doctor_prompt import build_doctor_prompt
 from backend.ai.prompts.patient_prompt import build_patient_prompt
 # pyrefly: ignore [missing-import]
 from backend.ai.prompts.emergency_prompt import build_emergency_prompt
+# pyrefly: ignore [missing-import]
+from backend.ai.llm.gemini_provider import ReportGenerationError
 
 # Configure module-level logger
 logger = logging.getLogger(__name__)
@@ -18,6 +20,10 @@ class MedicalReportGenerator:
     This class coordinates between the RAG Retriever (for fetching clinical context)
     and the LLM Provider (for generating reports). It uses specialized prompt builders
     to generate distinct, audience-specific reports simultaneously.
+
+    Raises:
+        ReportGenerationError: If any LLM call fails. The caller is responsible
+            for deciding whether to surface this as an HTTP error or log-and-continue.
     """
 
     def __init__(self, retriever: Any, llm_provider: Any, log_level: int = logging.INFO):
@@ -57,6 +63,11 @@ class MedicalReportGenerator:
                 "patient_report": str,
                 "emergency_alert": str or None
             }
+
+        Raises:
+            ReportGenerationError: If the LLM provider fails (quota exceeded,
+                service unavailable, etc.). The caller must handle this and
+                decide whether to return an HTTP error or log-and-continue.
         """
         logger.info(f"Starting report generation workflow for diagnosis. Emergency: {is_emergency}")
 
@@ -76,32 +87,22 @@ class MedicalReportGenerator:
             medical_context = "No medical context available due to retrieval error."
 
         # 2. Generate Doctor's Clinical Report
-        try:
-            logger.info("Generating Doctor's Clinical Report...")
-            doctor_prompt = build_doctor_prompt(diagnosis, medical_context)
-            results["doctor_report"] = self.llm_provider.generate_response(doctor_prompt)
-        except Exception as e:
-            logger.error(f"Failed to generate Doctor's Report: {str(e)}")
-            results["doctor_report"] = f"Error generating report: {str(e)}"
+        # ReportGenerationError from the LLM is intentionally NOT caught here —
+        # it propagates to the caller so HTTP routes can return a proper error code.
+        logger.info("Generating Doctor's Clinical Report...")
+        doctor_prompt = build_doctor_prompt(diagnosis, medical_context)
+        results["doctor_report"] = self.llm_provider.generate_response(doctor_prompt)
 
         # 3. Generate Patient's Egyptian Arabic Report
-        try:
-            logger.info("Generating Patient's Bilingual Report (Egyptian Arabic)...")
-            patient_prompt = build_patient_prompt(diagnosis, medical_context)
-            results["patient_report"] = self.llm_provider.generate_response(patient_prompt)
-        except Exception as e:
-            logger.error(f"Failed to generate Patient's Report: {str(e)}")
-            results["patient_report"] = f"Error generating report: {str(e)}"
+        logger.info("Generating Patient's Bilingual Report (Egyptian Arabic)...")
+        patient_prompt = build_patient_prompt(diagnosis, medical_context)
+        results["patient_report"] = self.llm_provider.generate_response(patient_prompt)
 
         # 4. Generate Emergency Alert (if flagged)
         if is_emergency:
-            try:
-                logger.warning("Emergency flag detected. Generating Critical Alert...")
-                emergency_prompt = build_emergency_prompt(diagnosis, medical_context, confidence_score)
-                results["emergency_alert"] = self.llm_provider.generate_response(emergency_prompt)
-            except Exception as e:
-                logger.error(f"Failed to generate Emergency Alert: {str(e)}")
-                results["emergency_alert"] = f"Error generating alert: {str(e)}"
+            logger.warning("Emergency flag detected. Generating Critical Alert...")
+            emergency_prompt = build_emergency_prompt(diagnosis, medical_context, confidence_score)
+            results["emergency_alert"] = self.llm_provider.generate_response(emergency_prompt)
         else:
             logger.debug("Non-emergency diagnosis. Skipping Emergency Alert generation.")
 

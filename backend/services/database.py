@@ -16,5 +16,3 @@ def get_db():
         yield db
     finally:
         db.close()
-# pyrefly: ignore [parse-error]
-```

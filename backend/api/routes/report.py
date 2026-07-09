@@ -4,6 +4,8 @@ from typing import List, Union
 from fastapi import APIRouter, HTTPException, Request
 # pyrefly: ignore [missing-import]
 from pydantic import BaseModel, Field
+# pyrefly: ignore [missing-import]
+from backend.ai.llm.gemini_provider import ReportGenerationError
 
 
 # Configure module-level logger
@@ -24,8 +26,8 @@ class ECGAnalysisRequest(BaseModel):
     patient_id: str = Field(..., example="PTB-XL-001")
     leads: Union[List[float], List[List[float]]] = Field(
         ...,
-        description="Raw 12-lead ECG data array.",
-        example=[0.1, -0.2, 0.5, 0.0, 0.1, 0.2, -0.1, 0.0, 0.4, 0.1, -0.3, 0.2]
+        description="Raw 12-lead ECG data array. Must be (1000, 12) or flat list of 12000 floats.",
+        example=[]
     )
 
 @router.post("/generate")
@@ -42,9 +44,24 @@ async def generate_clinical_reports(payload: DiagnosisPayload, request: Request)
             is_emergency=payload.is_emergency
         )
         return reports
+
+    except ReportGenerationError as rge:
+        # Map typed error to the correct HTTP status code.
+        # Log the full provider error (internal only).
+        # Surface only the safe Arabic message to the client.
+        logger.error(
+            "Report generation failed (HTTP %d): %s",
+            rge.status_code,
+            str(rge)
+        )
+        raise HTTPException(
+            status_code=rge.status_code,
+            detail=rge.safe_message,
+        )
+
     except Exception as e:
-        logger.error(f"Critical failure during report generation: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Unexpected failure during report generation: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="تعذر إنشاء التقرير الذكي مؤقتًا. حاول مرة أخرى لاحقًا.")
 
 @router.post("/analyze")
 async def analyze_ecg_manually(payload: ECGAnalysisRequest, request: Request):
@@ -78,6 +95,18 @@ async def analyze_ecg_manually(payload: ECGAnalysisRequest, request: Request):
             "ai_reports": reports
         }
 
+    except ReportGenerationError as rge:
+        logger.error(
+            "Report generation failed for %s (HTTP %d): %s",
+            payload.patient_id,
+            rge.status_code,
+            str(rge)
+        )
+        raise HTTPException(
+            status_code=rge.status_code,
+            detail=rge.safe_message,
+        )
+
     except Exception as e:
         logger.error(f"Critical failure during ECG analysis: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="تعذر إنشاء التقرير الذكي مؤقتًا. حاول مرة أخرى لاحقًا.")

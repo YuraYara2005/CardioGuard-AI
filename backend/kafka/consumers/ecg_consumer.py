@@ -3,7 +3,7 @@ import logging
 import time
 
 from collections import defaultdict
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 
 try:
@@ -27,6 +27,42 @@ from backend.api.websocket_manager import (
 logger = logging.getLogger(__name__)
 
 
+# ============================================================
+# Streaming GenAI Feature Flag
+# ============================================================
+#
+# Set to True ONLY if you want the Kafka consumer to
+# automatically trigger Gemini report generation for each
+# detected anomaly window.
+#
+# WARNING: With Gemini free-tier, each anomaly window that
+# reaches inference fires TWO Gemini requests (doctor report +
+# patient report). At 100 Hz / 1000-sample windows, one patient
+# producing continuous anomalies generates 2 requests every
+# ~10 seconds, exhausting the free-tier quota within minutes.
+#
+# The deduplication cooldown below provides a secondary safety
+# net, but the primary protection is this flag being False.
+#
+ENABLE_STREAMING_GENAI: bool = False
+
+
+# ============================================================
+# Streaming GenAI Deduplication Cooldown
+# ============================================================
+#
+# Even when ENABLE_STREAMING_GENAI is True, a report will only
+# be generated for a given (patient_id, diagnosis) pair at most
+# once per REPORT_COOLDOWN_SECONDS.
+#
+# Emergency state transitions (non-emergency → emergency) are
+# allowed to bypass the cooldown ONCE per transition.
+# Repeated emergency frames while is_emergency stays True do
+# NOT bypass the cooldown.
+#
+REPORT_COOLDOWN_SECONDS: int = 1800  # 30 minutes
+
+
 class ECGConsumer:
     """
     Consumes live streaming 12-lead ECG data from Kafka.
@@ -38,7 +74,8 @@ class ECGConsumer:
     3. Accumulate 1000 timesteps per patient
     4. Run ECG inference
     5. Broadcast inference results
-    6. Generate reports for detected anomalies
+    6. Optionally generate reports for detected anomalies
+       (controlled by ENABLE_STREAMING_GENAI flag and cooldown)
     """
 
     def __init__(
@@ -112,6 +149,22 @@ class ECGConsumer:
         self.inference_window_size = 1000
 
         self.is_running = False
+
+
+        # ====================================================
+        # GenAI Deduplication State
+        # ====================================================
+        #
+        # Tracks (last_report_time, last_diagnosis,
+        #         last_was_emergency) per patient.
+        # Used only when ENABLE_STREAMING_GENAI is True.
+        #
+
+        # patient_id -> (report_timestamp_s, diagnosis_str, was_emergency)
+        self._last_report_state: Dict[
+            str,
+            Tuple[float, str, bool]
+        ] = {}
 
 
         # ====================================================
@@ -321,6 +374,138 @@ class ECGConsumer:
 
 
     # ========================================================
+    # GenAI Deduplication Check
+    # ========================================================
+
+    def _should_generate_report(
+        self,
+        patient_id: str,
+        diagnosis: str,
+        is_emergency: bool,
+    ) -> bool:
+        """
+        Returns True only when a new GenAI report is warranted.
+
+        Rules:
+        1. If we have never generated a report for this patient,
+           allow it.
+        2. If the diagnosis has changed, allow it (but still
+           subject to cooldown unless it is also a new emergency).
+        3. If the patient transitioned from non-emergency to
+           emergency, bypass the cooldown once.
+        4. Otherwise, enforce the 30-minute cooldown window.
+        """
+
+        now = time.monotonic()
+        state = self._last_report_state.get(patient_id)
+
+        if state is None:
+            # First report for this patient
+            return True
+
+        last_time, last_diagnosis, last_was_emergency = state
+
+        # New emergency transition: non-emergency → emergency
+        new_emergency_transition = (
+            is_emergency and not last_was_emergency
+        )
+
+        if new_emergency_transition:
+            logger.info(
+                "New emergency transition detected for "
+                "patient %s. Bypassing cooldown.",
+                patient_id
+            )
+            return True
+
+        # Check cooldown
+        elapsed = now - last_time
+        if elapsed < REPORT_COOLDOWN_SECONDS:
+            logger.debug(
+                "Skipping GenAI report for patient %s "
+                "(same diagnosis within cooldown: "
+                "%.0f / %d seconds elapsed).",
+                patient_id,
+                elapsed,
+                REPORT_COOLDOWN_SECONDS
+            )
+            return False
+
+        return True
+
+
+    def _record_report_generated(
+        self,
+        patient_id: str,
+        diagnosis: str,
+        is_emergency: bool,
+    ) -> None:
+        """Record that a report was generated for deduplication."""
+        self._last_report_state[patient_id] = (
+            time.monotonic(),
+            diagnosis,
+            is_emergency,
+        )
+
+
+    # ========================================================
+    # Optional Streaming GenAI Report
+    # ========================================================
+
+    def _maybe_generate_streaming_report(
+        self,
+        patient_id: str,
+        diagnosis: str,
+        confidence: float,
+        is_emergency: bool,
+    ) -> None:
+        """
+        Conditionally triggers GenAI report generation.
+
+        This method is only called when ENABLE_STREAMING_GENAI
+        is True. Any failure is caught locally and logged —
+        it will NEVER propagate to the consumer loop.
+        """
+
+        if not self._should_generate_report(
+            patient_id, diagnosis, is_emergency
+        ):
+            return
+
+        try:
+            clinical_finding = (
+                f"Patient {patient_id} "
+                f"shows signs of "
+                f"{diagnosis}."
+            )
+
+            self.report_generator.generate_reports(
+                diagnosis=clinical_finding,
+                confidence_score=confidence,
+                is_emergency=is_emergency
+            )
+
+            self._record_report_generated(
+                patient_id, diagnosis, is_emergency
+            )
+
+            logger.info(
+                "Streaming GenAI reports generated "
+                "for patient %s.",
+                patient_id
+            )
+
+        except Exception as exc:
+            # Report generation failure must NEVER crash the loop.
+            logger.error(
+                "Streaming GenAI report generation failed "
+                "for patient %s (will retry after cooldown): %s",
+                patient_id,
+                exc
+            )
+
+
+    # ========================================================
     # Start Consumer
     # ========================================================
 
@@ -339,6 +524,19 @@ class ECGConsumer:
             "Starting consumption loop. "
             "Waiting for live ECG streams..."
         )
+
+        if ENABLE_STREAMING_GENAI:
+            logger.warning(
+                "ENABLE_STREAMING_GENAI is True. "
+                "Gemini will be called for anomalies "
+                "(30-minute cooldown per patient active)."
+            )
+        else:
+            logger.info(
+                "ENABLE_STREAMING_GENAI is False. "
+                "Kafka streaming runs independently of Gemini. "
+                "No automatic GenAI calls will occur."
+            )
 
         self.is_running = True
 
@@ -577,45 +775,48 @@ class ECGConsumer:
 
 
                     # ========================================
-                    # 8. Generate Reports for Anomaly
+                    # 8. Optional: Streaming GenAI Report
+                    #
+                    # Controlled by ENABLE_STREAMING_GENAI.
+                    # Defaults to False to protect free-tier
+                    # Gemini quota.
                     # ========================================
 
                     if (
-                        diagnosis != "Normal ECG"
-                        or is_emergency
+                        ENABLE_STREAMING_GENAI
+                        and (
+                            diagnosis != "Normal ECG"
+                            or is_emergency
+                        )
                     ):
-
                         logger.warning(
                             "ANOMALY DETECTED for %s: "
                             "%s "
                             "(Confidence: %.2f%%). "
-                            "Triggering GenAI Reports...",
+                            "Evaluating GenAI report eligibility...",
                             patient_id,
                             diagnosis,
                             confidence * 100
                         )
 
-
-                        clinical_finding = (
-                            f"Patient {patient_id} "
-                            f"shows signs of "
-                            f"{diagnosis}."
+                        self._maybe_generate_streaming_report(
+                            patient_id=str(patient_id),
+                            diagnosis=diagnosis,
+                            confidence=confidence,
+                            is_emergency=is_emergency,
                         )
 
-
-                        self.report_generator.generate_reports(
-                            diagnosis=clinical_finding,
-
-                            confidence_score=confidence,
-
-                            is_emergency=is_emergency
-                        )
-
-
-                        logger.info(
-                            "GenAI reports generated "
-                            "for patient %s.",
-                            patient_id
+                    elif diagnosis != "Normal ECG" or is_emergency:
+                        # Still log the anomaly even when GenAI is off
+                        logger.warning(
+                            "ANOMALY DETECTED for %s: "
+                            "%s "
+                            "(Confidence: %.2f%%). "
+                            "Streaming GenAI is disabled — "
+                            "no report generated.",
+                            patient_id,
+                            diagnosis,
+                            confidence * 100
                         )
 
 

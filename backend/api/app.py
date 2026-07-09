@@ -40,6 +40,10 @@ from backend.api.routes.predict import router as predict_router
 # pyrefly: ignore [missing-import]
 from backend.api.routes.stream import router as stream_router
 
+# Patients registry router
+# pyrefly: ignore [missing-import]
+from backend.api.routes.patients import router as patients_router
+
 # NEW: Shared WebSocket manager
 # pyrefly: ignore [missing-import]
 from backend.api.websocket_manager import ecg_websocket_manager
@@ -391,6 +395,8 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -420,6 +426,13 @@ app.include_router(
 # WS /ws/ecg-stream
 app.include_router(
     stream_router
+)
+
+# Patient registry:
+# GET /patients
+# GET /patients/{patient_id}
+app.include_router(
+    patients_router
 )
 
 

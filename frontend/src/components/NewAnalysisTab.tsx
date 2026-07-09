@@ -552,6 +552,46 @@ export default function NewAnalysisTab({
           form.ecgFile!,
         );
 
+      // ── ECG shape validation ──────────────────────────────────────────
+      // Reject obviously-too-small inputs. The backend predictor pads
+      // short arrays to 1000 timesteps, but fewer than 100 samples of
+      // real ECG data produces meaningless inference output.
+      //
+      // Valid shapes accepted by the backend:
+      //   (1000, 12) — standard PTB-XL 100 Hz
+      //   (12, 1000) — transposed; predictor auto-corrects
+      //   flat list divisible by 12, length ≥ 1200 (100 × 12)
+      const MIN_TIMESTEPS = 100;
+      const MIN_FLAT_LENGTH = MIN_TIMESTEPS * 12; // 1200
+
+      const firstItem = leadsData[0];
+      const is2D = Array.isArray(firstItem);
+
+      if (is2D) {
+        const rows = leadsData.length;
+        const cols = (firstItem as number[]).length;
+        const timesteps = cols === 12 ? rows : cols === rows ? cols : rows;
+        if (timesteps < MIN_TIMESTEPS) {
+          throw new Error(
+            `ECG array has only ${timesteps} timestep(s). ` +
+            `A minimum of ${MIN_TIMESTEPS} timesteps (preferably 1000) ` +
+            `are required for valid inference. ` +
+            `Please upload a real PTB-XL or compatible 12-lead ECG recording.`,
+          );
+        }
+      } else {
+        // Flat array — must be at least 1200 floats
+        const flatLen = leadsData.length;
+        if (flatLen < MIN_FLAT_LENGTH) {
+          throw new Error(
+            `Flat ECG array length is ${flatLen}. ` +
+            `Minimum required: ${MIN_FLAT_LENGTH} values (${MIN_TIMESTEPS} timesteps × 12 leads). ` +
+            `Please upload a real 12-lead ECG recording, not a toy sample.`,
+          );
+        }
+      }
+      // ── End ECG validation ────────────────────────────────────────────
+
       const imageData =
         await imageFileToArray(
           form.ecgImage!,

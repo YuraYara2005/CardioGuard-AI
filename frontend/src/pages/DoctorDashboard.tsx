@@ -327,13 +327,63 @@ export default function DoctorDashboard() {
 
   const [analysisResult, setAnalysisResult] =
     useState<MultimodalPredictionResponse | null>(
-      null,
+      () => {
+        try {
+          const stored = localStorage.getItem(
+            'cg_latest_analysis',
+          );
+
+          if (!stored) return null;
+
+          const parsed = JSON.parse(
+            stored,
+          ) as MultimodalPredictionResponse;
+
+          if (
+            parsed &&
+            typeof parsed.status === 'string' &&
+            parsed.result &&
+            typeof parsed.result.diagnosis === 'string' &&
+            !parsed.result.diagnosis.startsWith('Error:')
+          ) {
+            return parsed;
+          }
+
+          return null;
+        } catch {
+          return null;
+        }
+      },
     );
 
   const [latestPayload, setLatestPayload] =
     useState<KafkaStreamPayload | null>(null);
 
+
+  // ==========================================================
+  // Stable KPI Display State
+  // ==========================================================
+
+  const [displayHeartRate, setDisplayHeartRate] =
+    useState<number | null>(null);
+
+  const [displayConfidence, setDisplayConfidence] =
+    useState<number | null>(null);
+
+  const [displayAnomalyType, setDisplayAnomalyType] =
+    useState<string>('Awaiting signal');
+
+
+  // ==========================================================
+  // Refs
+  // ==========================================================
+
   const pointsRef = useRef<ECGDataPoint[]>([]);
+
+  // Stores the newest calculated HR without forcing
+  // the card to re-render on every Kafka frame.
+  const pendingHeartRateRef =
+    useRef<number | null>(null);
 
 
   // ==========================================================
@@ -342,6 +392,7 @@ export default function DoctorDashboard() {
 
   const handleData = useCallback(
     (payload: KafkaStreamPayload) => {
+      // Keep latest raw payload for live ECG value display.
       setLatestPayload(payload);
 
       const point: ECGDataPoint = {
@@ -356,7 +407,48 @@ export default function DoctorDashboard() {
         point,
       ];
 
+      // Waveform remains fully real-time.
       setEcgPoints([...pointsRef.current]);
+
+
+      // ------------------------------------------------------
+      // Heart Rate Candidate
+      // ------------------------------------------------------
+      // Keep existing demo calculation unchanged.
+      // Store candidate in a ref instead of updating
+      // the visible card every Kafka frame.
+
+      const hrCandidate =
+        (
+          Math.round(
+            (60 / 0.008) *
+            Math.abs(payload.ecg_value) *
+            10,
+          ) %
+          40
+        ) + 60;
+
+      pendingHeartRateRef.current = hrCandidate;
+
+
+      // ------------------------------------------------------
+      // Sticky AI Confidence
+      // ------------------------------------------------------
+      // Only update when confidence genuinely exists.
+      // Frames without confidence never erase the old value.
+
+      if (
+        payload.confidence != null &&
+        Number.isFinite(payload.confidence)
+      ) {
+        setDisplayConfidence(payload.confidence);
+
+        if (payload.anomaly_type) {
+          setDisplayAnomalyType(
+            payload.anomaly_type,
+          );
+        }
+      }
     },
     [],
   );
@@ -369,6 +461,10 @@ export default function DoctorDashboard() {
     [],
   );
 
+
+  // ==========================================================
+  // WebSocket Connection
+  // ==========================================================
 
   useEffect(() => {
     const disconnect = createECGStream({
@@ -385,6 +481,28 @@ export default function DoctorDashboard() {
 
 
   // ==========================================================
+  // Readable Heart Rate Refresh
+  // ==========================================================
+  // ECG waveform continues at full speed.
+  // Only the visible Heart Rate card refreshes every 2 seconds.
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      const latestHR =
+        pendingHeartRateRef.current;
+
+      if (latestHR != null) {
+        setDisplayHeartRate(latestHR);
+      }
+    }, 2000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, []);
+
+
+  // ==========================================================
   // Analysis Result Handler
   // ==========================================================
 
@@ -392,31 +510,33 @@ export default function DoctorDashboard() {
     result: MultimodalPredictionResponse,
   ) {
     setAnalysisResult(result);
+
+    try {
+      localStorage.setItem(
+        'cg_latest_analysis',
+        JSON.stringify(result),
+      );
+    } catch {
+      // Ignore localStorage quota/private browsing failures.
+    }
+
     setActiveTab('reports');
   }
 
 
   // ==========================================================
-  // Derived Telemetry Stats
+  // Derived Stable Telemetry Stats
   // ==========================================================
 
   const currentHR =
-    latestPayload
-      ? (
-        Math.round(
-          (60 / 0.008) *
-          Math.abs(latestPayload.ecg_value) *
-          10,
-        ) %
-        40 +
-        60
-      )
+    displayHeartRate != null
+      ? displayHeartRate
       : '—';
 
   const confidence =
-    latestPayload?.confidence != null
+    displayConfidence != null
       ? `${(
-        latestPayload.confidence * 100
+        displayConfidence * 100
       ).toFixed(1)}%`
       : '—';
 
@@ -535,10 +655,11 @@ export default function DoctorDashboard() {
             </span>
 
 
-            {/* Settings icon is intentionally kept */}
             <button
               type="button"
-              onClick={() => setActiveTab('settings')}
+              onClick={() =>
+                setActiveTab('settings')
+              }
               className={`
                 w-9 h-9
                 rounded-xl border
@@ -586,7 +707,9 @@ export default function DoctorDashboard() {
             <div className="mb-6 animate-fade-in-up">
               <EmergencyAlertBanner
                 payload={emergency}
-                onDismiss={() => setEmergency(null)}
+                onDismiss={() =>
+                  setEmergency(null)
+                }
               />
             </div>
           )}
@@ -605,7 +728,7 @@ export default function DoctorDashboard() {
                 <StatCard
                   label="Heart Rate"
                   value={`${currentHR} bpm`}
-                  sub="Real-time estimate"
+                  sub="Updated every 2 seconds"
                   icon={Heart}
                   color="bg-red-500/15 text-red-400"
                 />
@@ -613,10 +736,7 @@ export default function DoctorDashboard() {
                 <StatCard
                   label="AI Confidence"
                   value={confidence}
-                  sub={
-                    latestPayload?.anomaly_type ??
-                    'Awaiting signal'
-                  }
+                  sub={displayAnomalyType}
                   icon={Cpu}
                   color="bg-indigo-500/15 text-indigo-400"
                 />

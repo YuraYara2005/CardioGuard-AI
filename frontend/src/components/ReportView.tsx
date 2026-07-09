@@ -1,28 +1,135 @@
-import { useRef } from 'react';
+import { useRef, useState, useCallback } from 'react';
 import {
   Printer,
   Activity,
   AlertTriangle,
   Download,
   CheckCircle,
+  FileText,
+  Loader2,
+  AlertCircle,
 } from 'lucide-react';
 
 import type {
   MultimodalPredictionResponse,
 } from '../types';
 
+import {
+  generateClinicalReports,
+  REPORT_UNAVAILABLE_AR,
+  type GeneratedReports,
+} from '../api/reportService';
+
 interface ReportViewProps {
   result: MultimodalPredictionResponse;
+}
+
+interface StoredPatientReport {
+  patient_id: string;
+  diagnosis: string;
+  confidence_score: number;
+  is_emergency: boolean;
+  doctor_report: string;
+  patient_report: string;
+  generated_at: string;
 }
 
 function pct(value: number) {
   return `${(value * 100).toFixed(1)}%`;
 }
 
+function getCurrentAnalysisPatientId(): string {
+  try {
+    const raw = localStorage.getItem('cg_latest_analysis');
+
+    if (!raw) {
+      return 'P001';
+    }
+
+    const parsed = JSON.parse(raw);
+
+    return (
+      parsed?.patient_id ??
+      parsed?.patientId ??
+      parsed?.metadata?.patient_id ??
+      'P001'
+    );
+  } catch {
+    return 'P001';
+  }
+}
+
 export default function ReportView({
   result,
 }: ReportViewProps) {
   const printRef = useRef<HTMLDivElement>(null);
+
+  const [genReport, setGenReport] =
+    useState<GeneratedReports | null>(null);
+
+  const [genLoading, setGenLoading] = useState(false);
+  const [genError, setGenError] = useState('');
+
+  const requestInFlight = useRef(false);
+
+  const handleGenerateReport = useCallback(async () => {
+    if (requestInFlight.current || genLoading) return;
+
+    requestInFlight.current = true;
+    setGenLoading(true);
+    setGenError('');
+    setGenReport(null);
+
+    try {
+      const reports = await generateClinicalReports({
+        diagnosis: result.result.diagnosis,
+        confidence_score: result.result.confidence_score,
+        is_emergency: result.result.is_emergency,
+      });
+
+      setGenReport(reports);
+
+      // ------------------------------------------------------
+      // Save generated report for the correct patient portal
+      // ------------------------------------------------------
+
+      const patientId = getCurrentAnalysisPatientId();
+
+      const storedReport: StoredPatientReport = {
+        patient_id: patientId,
+        diagnosis: result.result.diagnosis,
+        confidence_score: result.result.confidence_score,
+        is_emergency: result.result.is_emergency,
+        doctor_report: reports.doctor_report,
+        patient_report: reports.patient_report,
+        generated_at: new Date().toISOString(),
+      };
+
+      localStorage.setItem(
+        `cg_patient_report_${patientId}`,
+        JSON.stringify(storedReport),
+      );
+
+      // Optional convenience pointer to latest generated report
+      localStorage.setItem(
+        'cg_latest_generated_report',
+        JSON.stringify(storedReport),
+      );
+
+      console.info(
+        `[CardioGuard] Clinical report saved for patient ${patientId}`,
+      );
+    } catch (err) {
+      setGenError(
+        err instanceof Error
+          ? err.message
+          : REPORT_UNAVAILABLE_AR,
+      );
+    } finally {
+      setGenLoading(false);
+      requestInFlight.current = false;
+    }
+  }, [result, genLoading]);
 
   function handlePrint() {
     window.print();
@@ -109,10 +216,7 @@ export default function ReportView({
             </p>
 
             <p>Issued: {now}</p>
-
-            <p>
-              Mode: {result.mode}
-            </p>
+            <p>Mode: {result.mode}</p>
           </div>
         </div>
 
@@ -316,6 +420,96 @@ export default function ReportView({
           <span>Confidential Medical Document</span>
           <span>{now}</span>
         </div>
+      </div>
+
+      {/* Manual GenAI Clinical Report */}
+      <div className="print-hidden mt-8 glass-card p-6 space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+              <FileText className="w-4 h-4 text-indigo-400" />
+              AI Clinical Report (RAG + Gemini)
+            </h3>
+
+            <p className="text-xs text-cg-muted mt-0.5">
+              Generate a bilingual doctor &amp; patient report
+              from medical guidelines. Uses one Gemini call.
+            </p>
+          </div>
+
+          {!genReport && (
+            <button
+              id="btn-generate-clinical-report"
+              type="button"
+              onClick={handleGenerateReport}
+              disabled={genLoading}
+              className="btn-primary flex-shrink-0"
+            >
+              {genLoading ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <FileText className="w-4 h-4" />
+              )}
+
+              {genLoading
+                ? 'Generating…'
+                : 'Generate Clinical Report'}
+            </button>
+          )}
+        </div>
+
+        {genError && (
+          <div className="flex items-center gap-2 text-red-400 bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3 text-sm">
+            <AlertCircle className="w-4 h-4 flex-shrink-0" />
+            {genError}
+          </div>
+        )}
+
+        {genReport && (
+          <div className="space-y-4">
+            {genReport.doctor_report && (
+              <div>
+                <p className="text-xs font-semibold text-indigo-400 uppercase tracking-wide mb-2">
+                  Doctor&apos;s Clinical Report (English)
+                </p>
+
+                <div className="bg-white/[0.03] border border-white/10 rounded-xl p-4 text-sm text-cg-text leading-relaxed whitespace-pre-wrap">
+                  {genReport.doctor_report}
+                </div>
+              </div>
+            )}
+
+            {genReport.patient_report && (
+              <div>
+                <p className="text-xs font-semibold text-emerald-400 uppercase tracking-wide mb-2">
+                  تقرير المريض (عربي)
+                </p>
+
+                <div
+                  dir="rtl"
+                  lang="ar"
+                  className="bg-white/[0.03] border border-white/10 rounded-xl p-4 text-sm text-cg-text leading-relaxed whitespace-pre-wrap"
+                >
+                  {genReport.patient_report}
+                </div>
+              </div>
+            )}
+
+            <div className="flex justify-end">
+              <button
+                id="btn-regenerate-clinical-report"
+                type="button"
+                onClick={() => {
+                  setGenReport(null);
+                  setGenError('');
+                }}
+                className="btn-ghost text-xs"
+              >
+                Regenerate
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </>
   );

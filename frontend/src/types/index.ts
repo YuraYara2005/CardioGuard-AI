@@ -9,6 +9,7 @@ export interface AuthUser {
   email: string;
   role: UserRole;
   avatarUrl?: string;
+  patientId?: string;
 }
 
 // ─────────────────────────────────────────────
