@@ -6,6 +6,9 @@ ENV/
 env.bak/
 venv.bak/
 
+# CardioGuard Specific Data & DBs
+chroma_db/
+*.log
 
 # Machine Learning Models (Exclude heavy weights from being tracked)
 models/*.keras

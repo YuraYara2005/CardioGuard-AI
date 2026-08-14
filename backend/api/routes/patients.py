@@ -133,6 +133,31 @@ async def get_patients():
     logger.debug("GET /patients → returning %d records", len(_DEMO_PATIENTS))
     return _DEMO_PATIENTS
 
+@router.post("", response_model=Patient)
+async def create_patient(patient: Patient):
+    """Create a new patient."""
+    # pyrefly: ignore [missing-import]
+    from fastapi import HTTPException
+    for p in _DEMO_PATIENTS:
+        if p.id == patient.id:
+            raise HTTPException(status_code=400, detail="Patient with this ID already exists.")
+    
+    _DEMO_PATIENTS.append(patient)
+    logger.info(f"Created new patient: {patient.id}")
+    return patient
+
+@router.put("/{patient_id}", response_model=Patient)
+async def update_patient(patient_id: str, updated_patient: Patient):
+    """Update an existing patient."""
+    # pyrefly: ignore [missing-import]
+    from fastapi import HTTPException
+    for i, p in enumerate(_DEMO_PATIENTS):
+        if p.id == patient_id:
+            updated_patient.id = patient_id # preserve immutable ID
+            _DEMO_PATIENTS[i] = updated_patient
+            logger.info(f"Updated patient: {patient_id}")
+            return updated_patient
+    raise HTTPException(status_code=404, detail=f"Patient '{patient_id}' not found.")
 
 @router.get("/{patient_id}", response_model=Patient)
 async def get_patient_by_id(patient_id: str):

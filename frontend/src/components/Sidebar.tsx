@@ -15,6 +15,7 @@ const NAV_ITEMS: { id: DashboardTab; label: string; icon: React.ElementType }[] 
   { id: 'new-analysis', label: 'New Analysis',    icon: FilePlus2 },
   { id: 'patients',     label: 'Patients',        icon: Users },
   { id: 'reports',      label: 'Reports',         icon: FileText },
+  { id: 'frozen-episodes', label: 'Frozen Episodes', icon: Activity },
   { id: 'settings',     label: 'Settings',        icon: Settings },
 ];
 

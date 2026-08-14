@@ -22,9 +22,10 @@ import LiveECGCanvas from '../components/LiveECGCanvas';
 import EmergencyAlertBanner from '../components/EmergencyAlertBanner';
 import NewAnalysisTab from '../components/NewAnalysisTab';
 import ReportView from '../components/ReportView';
+import FrozenEpisodesTab from '../components/FrozenEpisodesTab';
 
 import { createECGStream } from '../api/streamService';
-import { getPatients } from '../api/patientService';
+import { getPatients, createPatient, updatePatient } from '../api/patientService';
 import { useAuth } from '../store/AuthContext';
 
 import type {
@@ -96,6 +97,11 @@ function PatientsTab() {
   const [patients, setPatients] = useState<Patient[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [isAdding, setIsAdding] = useState(false);
+  const [editingPatientId, setEditingPatientId] = useState<string | null>(null);
+  const [newPatient, setNewPatient] = useState({
+    id: '', name: '', age: '', gender: 'Male', bloodType: 'Unknown', dateOfBirth: ''
+  });
 
   useEffect(() => {
     getPatients()
@@ -107,6 +113,46 @@ function PatientsTab() {
         setLoading(false);
       });
   }, []);
+
+  const handleAddPatient = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      const payload = {
+        ...newPatient,
+        age: parseInt(newPatient.age, 10),
+        bloodType: newPatient.bloodType === 'Unknown' ? undefined : newPatient.bloodType,
+        createdAt: new Date().toISOString()
+      };
+      let p: Patient;
+      if (editingPatientId) {
+        payload.createdAt = patients.find(pt => pt.id === editingPatientId)?.createdAt || payload.createdAt;
+        p = await updatePatient(editingPatientId, payload);
+        setPatients(patients.map(pt => pt.id === editingPatientId ? p : pt));
+      } else {
+        p = await createPatient(payload);
+        setPatients([...patients, p]);
+      }
+      setIsAdding(false);
+      setEditingPatientId(null);
+      setNewPatient({ id: '', name: '', age: '', gender: 'Male', bloodType: 'Unknown', dateOfBirth: '' });
+    } catch (err: any) {
+      alert(err.message || 'Network error saving patient');
+    }
+  };
+
+  const handleEdit = (p: Patient) => {
+    setNewPatient({
+      id: p.id,
+      name: p.name,
+      age: p.age.toString(),
+      gender: p.gender,
+      bloodType: p.bloodType || 'Unknown',
+      dateOfBirth: p.dateOfBirth
+    });
+    setEditingPatientId(p.id);
+    setIsAdding(true);
+  };
+
 
   if (loading) {
     return (
@@ -131,11 +177,47 @@ function PatientsTab() {
     );
   }
 
+
+
   return (
     <div className="space-y-4">
-      <h2 className="text-lg font-semibold text-white">
-        Patient Registry
-      </h2>
+      <div className="flex justify-between items-center">
+        <h2 className="text-lg font-semibold text-white">
+          Patient Registry
+        </h2>
+        <button 
+          onClick={() => {
+            if (isAdding) {
+              setIsAdding(false);
+              setEditingPatientId(null);
+              setNewPatient({ id: '', name: '', age: '', gender: 'Male', bloodType: 'Unknown', dateOfBirth: '' });
+            } else {
+              setIsAdding(true);
+            }
+          }}
+          className="btn-primary"
+        >
+          {isAdding ? 'Cancel' : 'Add New Patient'}
+        </button>
+      </div>
+
+      {isAdding && (
+        <form onSubmit={handleAddPatient} className="glass-card p-4 space-y-4">
+          <div className="grid grid-cols-2 gap-4">
+            <input required placeholder="ID (e.g. P005)" className="input-field" value={newPatient.id} disabled={!!editingPatientId} onChange={e => setNewPatient({...newPatient, id: e.target.value})} />
+            <input required placeholder="Name" className="input-field" value={newPatient.name} onChange={e => setNewPatient({...newPatient, name: e.target.value})} />
+            <input required type="number" placeholder="Age" className="input-field" value={newPatient.age} onChange={e => setNewPatient({...newPatient, age: e.target.value})} />
+            <select className="input-field" value={newPatient.gender} onChange={e => setNewPatient({...newPatient, gender: e.target.value})}>
+              <option value="Male">Male</option><option value="Female">Female</option><option value="Other">Other</option>
+            </select>
+            <select className="input-field" value={newPatient.bloodType} onChange={e => setNewPatient({...newPatient, bloodType: e.target.value})}>
+              <option value="Unknown">Unknown</option><option value="A+">A+</option><option value="A-">A-</option><option value="B+">B+</option><option value="B-">B-</option><option value="AB+">AB+</option><option value="AB-">AB-</option><option value="O+">O+</option><option value="O-">O-</option>
+            </select>
+            <input required type="date" className="input-field" value={newPatient.dateOfBirth} onChange={e => setNewPatient({...newPatient, dateOfBirth: e.target.value})} />
+          </div>
+          <button type="submit" className="btn-primary">{editingPatientId ? 'Update Patient' : 'Save Patient'}</button>
+        </form>
+      )}
 
       {patients.length === 0 ? (
         <div className="glass-card p-12 text-center">
@@ -157,6 +239,7 @@ function PatientsTab() {
                   'Gender',
                   'Blood Type',
                   'Created',
+                  'Actions'
                 ].map((heading) => (
                   <th
                     key={heading}
@@ -198,16 +281,19 @@ function PatientsTab() {
                     {patient.gender}
                   </td>
 
-                  <td className="px-4 py-3">
-                    <span className="badge badge-info">
-                      {patient.bloodType ?? '–'}
-                    </span>
+                  <td className="px-4 py-3 text-cg-muted">
+                    {patient.bloodType || 'Unknown'}
                   </td>
 
                   <td className="px-4 py-3 text-cg-muted text-xs">
                     {new Date(
-                      patient.createdAt,
+                      patient.createdAt
                     ).toLocaleDateString()}
+                  </td>
+                  <td className="px-4 py-3 text-cg-muted">
+                    <button onClick={() => handleEdit(patient)} className="text-indigo-400 hover:text-indigo-300 underline text-xs">
+                      Edit
+                    </button>
                   </td>
                 </tr>
               ))}
@@ -926,6 +1012,16 @@ export default function DoctorDashboard() {
                 </div>
               )}
 
+            </div>
+          )}
+
+          {/* ==================================================
+              Frozen Episodes Tab
+          ================================================== */}
+
+          {activeTab === 'frozen-episodes' && (
+            <div className="h-[600px] animate-fade-in-up">
+              <FrozenEpisodesTab patientId="P001" />
             </div>
           )}
 

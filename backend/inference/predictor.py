@@ -633,6 +633,8 @@ class ECGPredictor:
                     attention_weights
                 ).shape
             )
+            # Add actual temporal attribution for XAI
+            result["attention_weights"] = np.asarray(attention_weights).tolist()
 
         logger.info(
             "Standalone ECG prediction: %s "

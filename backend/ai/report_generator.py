@@ -108,3 +108,26 @@ class MedicalReportGenerator:
 
         logger.info("Report generation workflow completed.")
         return results
+
+    def generate_structured_emergency_report(self, diagnosis: str, confidence_score: float) -> str:
+        """
+        Generates just the structured JSON for the emergency alert.
+        """
+        logger.info("Fetching clinical context for emergency report...")
+        try:
+            medical_context = self.retriever.retrieve_context(query=diagnosis, n_results=5)
+        except Exception as e:
+            logger.error(f"Failed to fetch medical context. Error: {str(e)}")
+            medical_context = "No medical context available."
+            
+        logger.info("Generating Structured Emergency Alert...")
+        emergency_prompt = build_emergency_prompt(diagnosis, medical_context, confidence_score)
+        
+        # Request JSON if possible
+        try:
+            raw_json = self.llm_provider.generate_response(emergency_prompt, response_mime_type="application/json")
+        except TypeError:
+            # Fallback for old providers
+            raw_json = self.llm_provider.generate_response(emergency_prompt)
+            
+        return raw_json

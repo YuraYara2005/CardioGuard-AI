@@ -104,6 +104,16 @@ export async function getPatientById(
   return data;
 }
 
+export async function createPatient(patientData: any): Promise<Patient> {
+  const { data } = await apiClient.post<Patient>('/patients', patientData);
+  return data;
+}
+
+export async function updatePatient(patientId: string, patientData: any): Promise<Patient> {
+  const { data } = await apiClient.put<Patient>(`/patients/${patientId}`, patientData);
+  return data;
+}
+
 
 // ============================================================
 // Standalone ECG Prediction

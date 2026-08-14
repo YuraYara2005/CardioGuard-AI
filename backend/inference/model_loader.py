@@ -67,11 +67,13 @@ class MultiHeadAttentionLayer(layers.Layer):
                 axis=1
             )
 
+            # Reduce over target tokens (axis=1) to get the importance of each source token
             avg_weights = tf.reduce_mean(
                 avg_weights,
-                axis=-1,
-                keepdims=True
+                axis=1
             )
+            # Expand dims to match original output shape (batch, 1000, 1)
+            avg_weights = tf.expand_dims(avg_weights, axis=-1)
 
             return pooled, avg_weights
 

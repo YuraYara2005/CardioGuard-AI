@@ -1,83 +1,26 @@
 import json
 import logging
 import time
-
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 
-
 try:
     # pyrefly: ignore [missing-import]
-    from confluent_kafka import (
-        Consumer,
-        KafkaError,
-    )
-
+    from confluent_kafka import Consumer, KafkaError
 except ImportError:
     Consumer = None
     KafkaError = None
 
-
-# pyrefly: ignore [missing-import]
-from backend.api.websocket_manager import (
-    ecg_websocket_manager,
-)
-
+from backend.api.websocket_manager import ecg_websocket_manager
+import backend.services.episodes_db as episodes_db
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-
-# ============================================================
-# Streaming GenAI Feature Flag
-# ============================================================
-#
-# Set to True ONLY if you want the Kafka consumer to
-# automatically trigger Gemini report generation for each
-# detected anomaly window.
-#
-# WARNING: With Gemini free-tier, each anomaly window that
-# reaches inference fires TWO Gemini requests (doctor report +
-# patient report). At 100 Hz / 1000-sample windows, one patient
-# producing continuous anomalies generates 2 requests every
-# ~10 seconds, exhausting the free-tier quota within minutes.
-#
-# The deduplication cooldown below provides a secondary safety
-# net, but the primary protection is this flag being False.
-#
 ENABLE_STREAMING_GENAI: bool = False
-
-
-# ============================================================
-# Streaming GenAI Deduplication Cooldown
-# ============================================================
-#
-# Even when ENABLE_STREAMING_GENAI is True, a report will only
-# be generated for a given (patient_id, diagnosis) pair at most
-# once per REPORT_COOLDOWN_SECONDS.
-#
-# Emergency state transitions (non-emergency → emergency) are
-# allowed to bypass the cooldown ONCE per transition.
-# Repeated emergency frames while is_emergency stays True do
-# NOT bypass the cooldown.
-#
 REPORT_COOLDOWN_SECONDS: int = 1800  # 30 minutes
 
-
 class ECGConsumer:
-    """
-    Consumes live streaming 12-lead ECG data from Kafka.
-
-    Responsibilities:
-
-    1. Receive raw 12-lead ECG timesteps
-    2. Broadcast live telemetry to frontend WebSocket clients
-    3. Accumulate 1000 timesteps per patient
-    4. Run ECG inference
-    5. Broadcast inference results
-    6. Optionally generate reports for detected anomalies
-       (controlled by ENABLE_STREAMING_GENAI flag and cooldown)
-    """
-
     def __init__(
         self,
         predictor: Any,
@@ -87,784 +30,208 @@ class ECGConsumer:
         group_id: str = "cardioguard_inference_group",
         log_level: int = logging.INFO
     ):
-
         if not logger.handlers:
             handler = logging.StreamHandler()
-
-            formatter = logging.Formatter(
-                "%(asctime)s - "
-                "%(name)s - "
-                "%(levelname)s - "
-                "%(message)s"
-            )
-
-            handler.setFormatter(
-                formatter
-            )
-
-            logger.addHandler(
-                handler
-            )
-
-        logger.setLevel(
-            log_level
-        )
-
+            formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+            handler.setFormatter(formatter)
+            logger.addHandler(handler)
+        logger.setLevel(log_level)
 
         if Consumer is None:
-            logger.critical(
-                "confluent-kafka is not installed."
-            )
-
-            raise ImportError(
-                "Cannot initialize consumer because "
-                "'confluent-kafka' is not installed."
-            )
-
+            logger.critical("confluent-kafka is not installed.")
+            raise ImportError("Cannot initialize consumer because 'confluent-kafka' is not installed.")
 
         self.predictor = predictor
-
-        self.report_generator = (
-            report_generator
-        )
-
+        self.report_generator = report_generator
         self.broker_url = broker_url
-
         self.topic_name = topic_name
-
-
-        # ====================================================
-        # Patient Buffers
-        # ====================================================
-
-        self.patient_buffers: Dict[
-            str,
-            List[List[float]]
-        ] = defaultdict(list)
-
-
-        # PTB-XL model:
-        # 1000 timesteps = 10 seconds @ 100 Hz
-
-        self.inference_window_size = 1000
-
         self.is_running = False
 
-
-        # ====================================================
-        # GenAI Deduplication State
-        # ====================================================
-        #
-        # Tracks (last_report_time, last_diagnosis,
-        #         last_was_emergency) per patient.
-        # Used only when ENABLE_STREAMING_GENAI is True.
-        #
-
-        # patient_id -> (report_timestamp_s, diagnosis_str, was_emergency)
-        self._last_report_state: Dict[
-            str,
-            Tuple[float, str, bool]
-        ] = {}
-
-
-        # ====================================================
-        # Kafka Consumer
-        # ====================================================
+        self.patient_states: Dict[str, Dict[str, Any]] = defaultdict(lambda: {
+            "buffer": [],
+            "state": "NORMAL", # NORMAL, CAPTURING, COOLDOWN
+            "post_trigger_count": 0,
+            "trigger_index": -1,
+            "trigger_timestamp": 0,
+            "diagnosis": "",
+            "confidence": 0.0,
+            "anomaly_type": "",
+            "cooldown_until": 0.0,
+            "frame_count": 0
+        })
 
         try:
-            logger.info(
-                "Initializing Kafka Consumer "
-                "connecting to '%s'...",
-                self.broker_url
-            )
-
+            logger.info("Initializing Kafka Consumer connecting to '%s'...", self.broker_url)
             self.consumer = Consumer({
-                "bootstrap.servers":
-                    self.broker_url,
-
-                "group.id":
-                    group_id,
-
-                "auto.offset.reset":
-                    "latest",
-
-                "enable.auto.commit":
-                    True,
+                "bootstrap.servers": self.broker_url,
+                "group.id": group_id,
+                "auto.offset.reset": "latest",
+                "enable.auto.commit": True,
             })
-
-            logger.info(
-                "Kafka Consumer successfully initialized."
-            )
-
+            logger.info("Kafka Consumer successfully initialized.")
         except Exception as exc:
-            logger.critical(
-                "Failed to initialize Kafka Consumer: %s",
-                exc
-            )
-
+            logger.critical("Failed to initialize Kafka Consumer: %s", exc)
             raise
 
-
-    # ========================================================
-    # Stop Consumer
-    # ========================================================
-
     def stop_consuming(self) -> None:
-
-        logger.info(
-            "Stop signal received for Kafka Consumer."
-        )
-
+        logger.info("Stop signal received for Kafka Consumer.")
         self.is_running = False
 
-
-    # ========================================================
-    # Timestamp Normalization
-    # ========================================================
-
     @staticmethod
-    def _normalize_timestamp(
-        timestamp: Any
-    ) -> int:
-        """
-        Frontend expects Unix milliseconds.
-
-        Handles:
-        - missing timestamps
-        - seconds
-        - milliseconds
-        """
-
+    def _normalize_timestamp(timestamp: Any) -> int:
         if timestamp is None:
-            return int(
-                time.time() * 1000
-            )
-
+            return int(time.time() * 1000)
         try:
             value = float(timestamp)
-
-            # Likely Unix seconds
             if value < 10_000_000_000:
                 value *= 1000
-
             return int(value)
+        except (TypeError, ValueError):
+            return int(time.time() * 1000)
 
-        except (
-            TypeError,
-            ValueError
-        ):
-            return int(
-                time.time() * 1000
-            )
+    def _broadcast_raw_sample(self, patient_id: str, leads: List[float], timestamp: Any) -> None:
+        ecg_value = float(leads[1] if len(leads) > 1 else leads[0])
+        stream_payload = {
+            "type": "raw_sample",
+            "timestamp": self._normalize_timestamp(timestamp),
+            "ecg_value": ecg_value,
+            "patient_id": str(patient_id),
+            "is_emergency": False,
+            "lead": "Lead II",
+        }
+        ecg_websocket_manager.publish_from_thread(stream_payload)
 
-
-    # ========================================================
-    # Raw Telemetry Broadcast
-    # ========================================================
-
-    def _broadcast_raw_sample(
-        self,
-        patient_id: str,
-        leads: List[float],
-        timestamp: Any
-    ) -> None:
-        """
-        Broadcast one ECG timestep to the browser.
-
-        The dashboard currently renders one waveform.
-        Lead II is conventionally index 1 in the
-        incoming 12-lead array.
-        """
-
-        ecg_value = float(
-            leads[1]
-            if len(leads) > 1
-            else leads[0]
-        )
+    def _broadcast_inference_result(self, patient_id: str, leads: List[float], timestamp: Any, result: Dict[str, Any]) -> None:
+        diagnosis = result.get("diagnosis", "Unknown")
+        confidence = float(result.get("confidence_score", 0.0))
+        is_emergency = bool(result.get("is_emergency", False))
+        ecg_value = float(leads[1] if len(leads) > 1 else leads[0])
 
         stream_payload = {
-            "timestamp":
-                self._normalize_timestamp(
-                    timestamp
-                ),
-
-            "ecg_value":
-                ecg_value,
-
-            "patient_id":
-                str(patient_id),
-
-            "is_emergency":
-                False,
-
-            "lead":
-                "Lead II",
+            "type": "inference_result",
+            "timestamp": self._normalize_timestamp(timestamp),
+            "ecg_value": ecg_value,
+            "patient_id": str(patient_id),
+            "is_emergency": is_emergency,
+            "anomaly_type": diagnosis,
+            "confidence": confidence,
+            "lead": "Lead II",
         }
-
-        ecg_websocket_manager.publish_from_thread(
-            stream_payload
-        )
-
-
-    # ========================================================
-    # Inference Broadcast
-    # ========================================================
-
-    def _broadcast_inference_result(
-        self,
-        patient_id: str,
-        leads: List[float],
-        timestamp: Any,
-        result: Dict[str, Any]
-    ) -> None:
-
-        diagnosis = result.get(
-            "diagnosis",
-            "Unknown"
-        )
-
-        confidence = float(
-            result.get(
-                "confidence_score",
-                0.0
-            )
-        )
-
-        is_emergency = bool(
-            result.get(
-                "is_emergency",
-                False
-            )
-        )
-
-        ecg_value = float(
-            leads[1]
-            if len(leads) > 1
-            else leads[0]
-        )
-
-        stream_payload = {
-            "timestamp":
-                self._normalize_timestamp(
-                    timestamp
-                ),
-
-            "ecg_value":
-                ecg_value,
-
-            "patient_id":
-                str(patient_id),
-
-            "is_emergency":
-                is_emergency,
-
-            "anomaly_type":
-                diagnosis,
-
-            "confidence":
-                confidence,
-
-            "lead":
-                "Lead II",
-        }
-
-        ecg_websocket_manager.publish_from_thread(
-            stream_payload
-        )
-
-
-    # ========================================================
-    # GenAI Deduplication Check
-    # ========================================================
-
-    def _should_generate_report(
-        self,
-        patient_id: str,
-        diagnosis: str,
-        is_emergency: bool,
-    ) -> bool:
-        """
-        Returns True only when a new GenAI report is warranted.
-
-        Rules:
-        1. If we have never generated a report for this patient,
-           allow it.
-        2. If the diagnosis has changed, allow it (but still
-           subject to cooldown unless it is also a new emergency).
-        3. If the patient transitioned from non-emergency to
-           emergency, bypass the cooldown once.
-        4. Otherwise, enforce the 30-minute cooldown window.
-        """
-
-        now = time.monotonic()
-        state = self._last_report_state.get(patient_id)
-
-        if state is None:
-            # First report for this patient
-            return True
-
-        last_time, last_diagnosis, last_was_emergency = state
-
-        # New emergency transition: non-emergency → emergency
-        new_emergency_transition = (
-            is_emergency and not last_was_emergency
-        )
-
-        if new_emergency_transition:
-            logger.info(
-                "New emergency transition detected for "
-                "patient %s. Bypassing cooldown.",
-                patient_id
-            )
-            return True
-
-        # Check cooldown
-        elapsed = now - last_time
-        if elapsed < REPORT_COOLDOWN_SECONDS:
-            logger.debug(
-                "Skipping GenAI report for patient %s "
-                "(same diagnosis within cooldown: "
-                "%.0f / %d seconds elapsed).",
-                patient_id,
-                elapsed,
-                REPORT_COOLDOWN_SECONDS
-            )
-            return False
-
-        return True
-
-
-    def _record_report_generated(
-        self,
-        patient_id: str,
-        diagnosis: str,
-        is_emergency: bool,
-    ) -> None:
-        """Record that a report was generated for deduplication."""
-        self._last_report_state[patient_id] = (
-            time.monotonic(),
-            diagnosis,
-            is_emergency,
-        )
-
-
-    # ========================================================
-    # Optional Streaming GenAI Report
-    # ========================================================
-
-    def _maybe_generate_streaming_report(
-        self,
-        patient_id: str,
-        diagnosis: str,
-        confidence: float,
-        is_emergency: bool,
-    ) -> None:
-        """
-        Conditionally triggers GenAI report generation.
-
-        This method is only called when ENABLE_STREAMING_GENAI
-        is True. Any failure is caught locally and logged —
-        it will NEVER propagate to the consumer loop.
-        """
-
-        if not self._should_generate_report(
-            patient_id, diagnosis, is_emergency
-        ):
-            return
-
-        try:
-            clinical_finding = (
-                f"Patient {patient_id} "
-                f"shows signs of "
-                f"{diagnosis}."
-            )
-
-            self.report_generator.generate_reports(
-                diagnosis=clinical_finding,
-                confidence_score=confidence,
-                is_emergency=is_emergency
-            )
-
-            self._record_report_generated(
-                patient_id, diagnosis, is_emergency
-            )
-
-            logger.info(
-                "Streaming GenAI reports generated "
-                "for patient %s.",
-                patient_id
-            )
-
-        except Exception as exc:
-            # Report generation failure must NEVER crash the loop.
-            logger.error(
-                "Streaming GenAI report generation failed "
-                "for patient %s (will retry after cooldown): %s",
-                patient_id,
-                exc
-            )
-
-
-    # ========================================================
-    # Start Consumer
-    # ========================================================
+        ecg_websocket_manager.publish_from_thread(stream_payload)
 
     def start_consuming(self) -> None:
-
-        logger.info(
-            "Subscribing to topic '%s'...",
-            self.topic_name
-        )
-
-        self.consumer.subscribe([
-            self.topic_name
-        ])
-
-        logger.info(
-            "Starting consumption loop. "
-            "Waiting for live ECG streams..."
-        )
-
-        if ENABLE_STREAMING_GENAI:
-            logger.warning(
-                "ENABLE_STREAMING_GENAI is True. "
-                "Gemini will be called for anomalies "
-                "(30-minute cooldown per patient active)."
-            )
-        else:
-            logger.info(
-                "ENABLE_STREAMING_GENAI is False. "
-                "Kafka streaming runs independently of Gemini. "
-                "No automatic GenAI calls will occur."
-            )
-
+        logger.info("Subscribing to topic '%s'...", self.topic_name)
+        self.consumer.subscribe([self.topic_name])
+        logger.info("Starting consumption loop. Waiting for live ECG streams...")
         self.is_running = True
-
 
         try:
             while self.is_running:
-
-                msg = self.consumer.poll(
-                    timeout=1.0
-                )
-
-
-                if msg is None:
-                    continue
-
-
+                msg = self.consumer.poll(timeout=1.0)
+                if msg is None: continue
                 if msg.error():
-
-                    if (
-                        KafkaError is not None
-                        and
-                        msg.error().code()
-                        == KafkaError._PARTITION_EOF
-                    ):
+                    if KafkaError is not None and msg.error().code() == KafkaError._PARTITION_EOF:
                         continue
-
-                    logger.error(
-                        "Kafka error occurred: %s",
-                        msg.error()
-                    )
-
+                    logger.error("Kafka error occurred: %s", msg.error())
                     continue
-
 
                 try:
-                    # ========================================
-                    # 1. Decode Kafka Payload
-                    # ========================================
+                    payload = json.loads(msg.value().decode("utf-8"))
+                    patient_id = str(payload.get("patient_id", ""))
+                    leads = payload.get("leads", [])
+                    timestamp = payload.get("timestamp")
 
-                    payload = json.loads(
-                        msg.value().decode(
-                            "utf-8"
-                        )
-                    )
-
-
-                    patient_id = payload.get(
-                        "patient_id"
-                    )
-
-                    leads = payload.get(
-                        "leads"
-                    )
-
-                    timestamp = payload.get(
-                        "timestamp"
-                    )
-
-
-                    # ========================================
-                    # 2. Validate Payload
-                    # ========================================
-
-                    if not patient_id:
-
-                        logger.warning(
-                            "Kafka payload missing "
-                            "patient_id. Skipping."
-                        )
-
+                    if not patient_id or not isinstance(leads, list) or len(leads) != 12:
                         continue
-
-
-                    if not isinstance(
-                        leads,
-                        list
-                    ):
-
-                        logger.warning(
-                            "Kafka payload has invalid "
-                            "leads field. Skipping."
-                        )
-
-                        continue
-
-
-                    if len(leads) != 12:
-
-                        logger.warning(
-                            "Expected 12 ECG leads, "
-                            "received %d. Skipping.",
-                            len(leads)
-                        )
-
-                        continue
-
-
                     try:
-                        leads = [
-                            float(value)
-                            for value in leads
-                        ]
-
-                    except (
-                        TypeError,
-                        ValueError
-                    ):
-
-                        logger.warning(
-                            "ECG leads contain "
-                            "non-numeric values. Skipping."
-                        )
-
+                        leads = [float(value) for value in leads]
+                    except (TypeError, ValueError):
                         continue
 
-
-                    # ========================================
                     # 3. Broadcast RAW Sample Immediately
-                    # ========================================
+                    self._broadcast_raw_sample(patient_id, leads, timestamp)
 
-                    self._broadcast_raw_sample(
-                        patient_id=str(
-                            patient_id
-                        ),
+                    # 4. State Machine Buffer Update
+                    state_info = self.patient_states[patient_id]
+                    state_info["buffer"].append(leads)
+                    state_info["frame_count"] += 1
 
-                        leads=leads,
+                    if len(state_info["buffer"]) > 1500:
+                        # Optimization: pop multiple to amortize cost if it were a list, 
+                        # but keeping it simple. For high frequency, a deque is better. 
+                        # Since we are using a list currently, pop(0) is slow. 
+                        # We'll just slice the list periodically instead of pop(0) every frame.
+                        state_info["buffer"] = state_info["buffer"][-1000:]
+                    
+                    if state_info["state"] == "COOLDOWN":
+                        if time.time() > state_info["cooldown_until"]:
+                            state_info["state"] = "NORMAL"
 
-                        timestamp=timestamp
-                    )
-
-
-                    # ========================================
-                    # 4. Add to Inference Buffer
-                    # ========================================
-
-                    self.patient_buffers[
-                        str(patient_id)
-                    ].append(
-                        leads
-                    )
-
-
-                    # ========================================
-                    # 5. Wait for 1000 Timesteps
-                    # ========================================
-
-                    if (
-                        len(
-                            self.patient_buffers[
-                                str(patient_id)
-                            ]
-                        )
-                        < self.inference_window_size
-                    ):
+                    if state_info["state"] == "CAPTURING":
+                        state_info["post_trigger_count"] += 1
+                        if state_info["post_trigger_count"] >= 250:
+                            episode_data = state_info["buffer"][-1000:]
+                            # Run XAI once per finalized emergency event
+                            result = self.predictor.analyze_ecg(episode_data)
+                            attention_weights = result.get("attention_weights", [])
+                            
+                            episodes_db.save_episode(
+                                patient_id=patient_id,
+                                detected_at=datetime.fromtimestamp(state_info["trigger_timestamp"]/1000.0).isoformat(),
+                                finalized_at=datetime.utcnow().isoformat(),
+                                diagnosis=state_info["diagnosis"],
+                                confidence_score=state_info["confidence"],
+                                anomaly_type=state_info["anomaly_type"],
+                                trigger_index=750,
+                                trigger_timestamp=state_info["trigger_timestamp"],
+                                leads_data=episode_data,
+                                attention_weights=attention_weights
+                            )
+                            ecg_websocket_manager.publish_from_thread({
+                                "type": "emergency_episode_frozen",
+                                "patient_id": patient_id
+                            })
+                            
+                            state_info["state"] = "COOLDOWN"
+                            state_info["cooldown_until"] = time.time() + REPORT_COOLDOWN_SECONDS
                         continue
 
+                    # If NORMAL or COOLDOWN, run inference periodically (every 250 frames)
+                    if len(state_info["buffer"]) < 1000:
+                        continue
+                        
+                    if state_info["frame_count"] % 250 != 0:
+                        continue
 
-                    logger.info(
-                        "Accumulated 1000 ECG timesteps "
-                        "for patient %s. "
-                        "Triggering inference...",
-                        patient_id
-                    )
+                    leads_data = state_info["buffer"][-1000:]
+                    result = self.predictor.analyze_ecg(leads_data)
 
+                    diagnosis = result.get("diagnosis", "Unknown")
+                    confidence = float(result.get("confidence_score", 0.0))
+                    is_emergency = bool(result.get("is_emergency", False))
 
-                    leads_data = (
-                        self.patient_buffers[
-                            str(patient_id)
-                        ][
-                            -self.inference_window_size:
-                        ]
-                    )
+                    self._broadcast_inference_result(patient_id, leads, timestamp, result)
 
-
-                    # Clear completed window
-                    self.patient_buffers[
-                        str(patient_id)
-                    ] = []
-
-
-                    # ========================================
-                    # 6. Run ECG Model
-                    # ========================================
-
-                    result = (
-                        self.predictor.analyze_ecg(
-                            leads_data
-                        )
-                    )
-
-
-                    diagnosis = result.get(
-                        "diagnosis",
-                        "Unknown"
-                    )
-
-                    confidence = float(
-                        result.get(
-                            "confidence_score",
-                            0.0
-                        )
-                    )
-
-                    is_emergency = bool(
-                        result.get(
-                            "is_emergency",
-                            False
-                        )
-                    )
-
-
-                    logger.info(
-                        "Inference completed for %s: "
-                        "%s (%.2f%%)",
-                        patient_id,
-                        diagnosis,
-                        confidence * 100
-                    )
-
-
-                    # ========================================
-                    # 7. Broadcast AI Result
-                    # ========================================
-
-                    self._broadcast_inference_result(
-                        patient_id=str(
-                            patient_id
-                        ),
-
-                        leads=leads,
-
-                        timestamp=timestamp,
-
-                        result=result
-                    )
-
-
-                    # ========================================
-                    # 8. Optional: Streaming GenAI Report
-                    #
-                    # Controlled by ENABLE_STREAMING_GENAI.
-                    # Defaults to False to protect free-tier
-                    # Gemini quota.
-                    # ========================================
-
-                    if (
-                        ENABLE_STREAMING_GENAI
-                        and (
-                            diagnosis != "Normal ECG"
-                            or is_emergency
-                        )
-                    ):
-                        logger.warning(
-                            "ANOMALY DETECTED for %s: "
-                            "%s "
-                            "(Confidence: %.2f%%). "
-                            "Evaluating GenAI report eligibility...",
-                            patient_id,
-                            diagnosis,
-                            confidence * 100
-                        )
-
-                        self._maybe_generate_streaming_report(
-                            patient_id=str(patient_id),
-                            diagnosis=diagnosis,
-                            confidence=confidence,
-                            is_emergency=is_emergency,
-                        )
-
-                    elif diagnosis != "Normal ECG" or is_emergency:
-                        # Still log the anomaly even when GenAI is off
-                        logger.warning(
-                            "ANOMALY DETECTED for %s: "
-                            "%s "
-                            "(Confidence: %.2f%%). "
-                            "Streaming GenAI is disabled — "
-                            "no report generated.",
-                            patient_id,
-                            diagnosis,
-                            confidence * 100
-                        )
-
+                    if is_emergency and state_info["state"] == "NORMAL":
+                        logger.warning("Emergency detected for %s. Transitioning to CAPTURING.", patient_id)
+                        state_info["state"] = "CAPTURING"
+                        state_info["trigger_timestamp"] = self._normalize_timestamp(timestamp)
+                        state_info["post_trigger_count"] = 0
+                        state_info["diagnosis"] = diagnosis
+                        state_info["confidence"] = confidence
+                        state_info["anomaly_type"] = diagnosis
 
                 except json.JSONDecodeError:
-
-                    logger.error(
-                        "Failed to decode JSON "
-                        "from Kafka message."
-                    )
-
-
+                    pass
                 except Exception as exc:
-
-                    logger.error(
-                        "Error processing incoming "
-                        "Kafka message: %s",
-                        exc,
-                        exc_info=True
-                    )
-
+                    logger.error("Error processing incoming Kafka message: %s", exc, exc_info=True)
 
         except KeyboardInterrupt:
-
-            logger.warning(
-                "KeyboardInterrupt detected. "
-                "Initiating graceful shutdown..."
-            )
-
-
+            logger.warning("KeyboardInterrupt detected. Initiating graceful shutdown...")
         except Exception as exc:
-
-            logger.error(
-                "Unexpected error in consumer loop: %s",
-                exc,
-                exc_info=True
-            )
-
+            logger.error("Unexpected error in consumer loop: %s", exc, exc_info=True)
             raise
-
-
         finally:
-
-            logger.info(
-                "Closing Kafka consumer connection..."
-            )
-
+            logger.info("Closing Kafka consumer connection...")
             self.consumer.close()
-
-            logger.info(
-                "Kafka Consumer shut down cleanly."
-            )
+            logger.info("Kafka Consumer shut down cleanly.")

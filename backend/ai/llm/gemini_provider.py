@@ -86,7 +86,7 @@ class GeminiLLMProvider:
             logger.critical(f"Failed to initialize the Gemini client: {str(e)}")
             raise RuntimeError(f"Generative AI Initialization Error: {str(e)}") from e
 
-    def generate_response(self, prompt: str) -> str:
+    def generate_response(self, prompt: str, response_mime_type: Optional[str] = None) -> str:
         if not prompt or not prompt.strip():
             logger.warning("An empty prompt was provided to the LLM. Returning empty response.")
             return ""
@@ -94,10 +94,16 @@ class GeminiLLMProvider:
         logger.info(f"Sending prompt to {self.model_name} (Length: {len(prompt)} characters)...")
 
         try:
+            kwargs = {}
+            if response_mime_type:
+                kwargs["config"] = genai.types.GenerateContentConfig(
+                    response_mime_type=response_mime_type
+                )
             # Modern SDK method for generation
             response = self.client.models.generate_content(
                 model=self.model_name,
-                contents=prompt
+                contents=prompt,
+                **kwargs
             )
             
             if not response.text:
@@ -128,22 +134,43 @@ class GeminiLLMProvider:
             # leaking raw provider details to end users.
             lower = raw_error.lower()
 
-            if "429" in raw_error or "quota" in lower or "rate" in lower:
+            if "404" in raw_error or "not found" in lower:
+                raise ReportGenerationError(
+                    message=f"Gemini model not found or unsupported: {raw_error}",
+                    status_code=404,
+                    safe_message="النموذج المطلوب غير متوفر حالياً.",
+                ) from e
+
+            if "401" in raw_error or "unauthenticated" in lower:
+                raise ReportGenerationError(
+                    message=f"Gemini authentication failed: {raw_error}",
+                    status_code=401,
+                    safe_message="مشكلة في المصادقة مع خدمة الذكاء الاصطناعي.",
+                ) from e
+
+            if "403" in raw_error or "permission denied" in lower:
+                raise ReportGenerationError(
+                    message=f"Gemini permission denied: {raw_error}",
+                    status_code=403,
+                    safe_message="صلاحيات غير كافية للوصول إلى خدمة الذكاء الاصطناعي.",
+                ) from e
+
+            if "429" in raw_error or "quota" in lower or "rate" in lower or "exhausted" in lower:
                 raise ReportGenerationError(
                     message=f"Gemini quota exhausted: {raw_error}",
                     status_code=429,
-                    safe_message="تعذر إنشاء التقرير الذكي مؤقتًا. حاول مرة أخرى لاحقًا.",
+                    safe_message="تم تجاوز الحد المسموح للاستخدام. حاول مرة أخرى لاحقًا.",
                 ) from e
 
-            if "503" in raw_error or "unavailable" in lower or "overload" in lower:
+            if "503" in raw_error or "unavailable" in lower or "overload" in lower or "timeout" in lower:
                 raise ReportGenerationError(
-                    message=f"Gemini service unavailable: {raw_error}",
+                    message=f"Gemini service unavailable/timeout: {raw_error}",
                     status_code=503,
-                    safe_message="تعذر إنشاء التقرير الذكي مؤقتًا. حاول مرة أخرى لاحقًا.",
+                    safe_message="الخدمة غير متاحة مؤقتاً أو انتهى وقت الاتصال.",
                 ) from e
 
             raise ReportGenerationError(
                 message=f"Unexpected Gemini error: {raw_error}",
                 status_code=500,
-                safe_message="تعذر إنشاء التقرير الذكي مؤقتًا. حاول مرة أخرى لاحقًا.",
+                safe_message="حدث خطأ غير متوقع. حاول مرة أخرى لاحقًا.",
             ) from e

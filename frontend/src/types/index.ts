@@ -166,4 +166,25 @@ export type DashboardTab =
   | 'new-analysis'
   | 'patients'
   | 'reports'
+  | 'frozen-episodes'
   | 'settings';
+
+// ─────────────────────────────────────────────
+// Frozen Episodes
+// ─────────────────────────────────────────────
+export interface EmergencyEpisode {
+  id: number;
+  patient_id: string;
+  patient_name?: string;
+  detected_at: string;
+  finalized_at: string | null;
+  diagnosis: string;
+  confidence_score: number;
+  anomaly_type: string;
+  trigger_index: number;
+  trigger_timestamp: number;
+  status: string;
+  report_state: string;
+  leads_data?: [number, number][];
+  attention_weights?: number[][];
+}

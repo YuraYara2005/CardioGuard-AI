@@ -134,8 +134,11 @@ async def lifespan(app: FastAPI):
         )
 
         # ====================================================
-        # 1. Initialize RAG Dependencies
+        # 1. Initialize DB and RAG Dependencies
         # ====================================================
+        
+        import backend.services.episodes_db as episodes_db
+        episodes_db.init_db()
 
         embedder = MedicalEmbeddingService()
 
@@ -434,6 +437,13 @@ app.include_router(
 app.include_router(
     patients_router
 )
+
+# Episodes
+from backend.api.routes.episodes import router as episodes_router
+app.include_router(
+    episodes_router
+)
+
 
 
 # ============================================================

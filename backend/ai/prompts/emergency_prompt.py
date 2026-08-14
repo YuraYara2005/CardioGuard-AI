@@ -1,33 +1,35 @@
 def build_emergency_prompt(diagnosis: str, medical_context: str, confidence_score: float) -> str:
     """
-    Constructs the string prompt to instruct an LLM to generate an urgent, 
-    high-priority alert for life-threatening cardiac anomalies.
-
-    Args:
-        diagnosis: The raw clinical finding representing a life-threatening anomaly.
-        medical_context: The consolidated string of medical knowledge retrieved 
-                         from the vector database.
-        confidence_score: A float representing the AI's confidence in the critical diagnosis 
-                          (e.g., 0.98 for 98%).
-
-    Returns:
-        A fully formatted string prompt ready to be sent to an LLM.
+    Constructs the string prompt to instruct an LLM to generate a structured 
+    JSON report for life-threatening cardiac anomalies.
     """
-    
-    # Format the confidence score as a highly visible percentage
     confidence_percentage = f"{confidence_score * 100:.1f}%"
     
-    prompt = f"""You are the CardioGuard Critical Alert System, an urgent, high-priority AI medical monitor.
-Your task is to immediately escalate a life-threatening cardiac anomaly to the emergency response team and the attending physician.
+    if confidence_score < 0.8:
+        confidence_instruction = f"""
+   - Confidence is {confidence_percentage} (LOW/MODERATE). You MUST use cautious language such as "AI analysis detected a possible pattern associated with...".
+   - Do NOT use certainty language like "confirmed", "definitive", "diagnosed", or "life-threatening anomaly detected".
+   - State clearly that clinical verification is required."""
+    else:
+        confidence_instruction = f"""
+   - Confidence is {confidence_percentage} (HIGH). You may use stronger language such as "AI analysis indicates a pattern associated with...", but you must NOT present it as a final, confirmed diagnosis."""
+
+    prompt = f"""You are an advanced medical AI providing clinical decision support for cardiologists.
+Your task is to analyze an ECG anomaly and provide a structured JSON report.
 
 CRITICAL INSTRUCTIONS:
-1. TONE & STYLE: You must use an urgent, highly visible Clinical English tone. 
-2. MANDATORY HEADER: You MUST begin your output exactly with: "🚨 CRITICAL CARDIAC ALERT 🚨" followed by a newline.
-3. STRUCTURE: Immediately below the header, your alert MUST explicitly contain the following three elements:
-   - The life-threatening anomaly.
-   - The AI's Confidence Score ({confidence_percentage}).
-   - The IMMEDIATE recommended intervention.
-4. STRICT PROTOCOL: The immediate recommended intervention MUST be based STRICTLY on the "Medical Context" provided below. Do not guess or suggest interventions outside of these guidelines.
+1. TONE & STYLE: Use concise, professional clinical language. Do NOT use emojis, asterisks, ALL CAPS, dramatic AI phrasing, or claim a confirmed diagnosis.
+2. CONFIDENCE AWARENESS:{confidence_instruction}
+3. OUTPUT FORMAT: You must output strictly valid JSON conforming to the following schema. Do NOT wrap in markdown blocks like ```json.
+{{
+  "clinical_interpretation": "A short, professional paragraph interpreting the finding. Do not use asterisks or markdown. Mention the anomaly and confidence context.",
+  "recommended_actions": [
+    "First clinical recommendation based on the medical context.",
+    "Second clinical recommendation...",
+    "..."
+  ],
+  "retrieved_context_summary": "A brief summary of the evidence-grounded guidelines applied."
+}}
 
 =========================================
 MEDICAL CONTEXT (Emergency Clinical Guidelines):
@@ -36,12 +38,6 @@ MEDICAL CONTEXT (Emergency Clinical Guidelines):
 =========================================
 CRITICAL FINDING:
 {diagnosis}
-
-AI CONFIDENCE SCORE:
-{confidence_score} ({confidence_percentage})
-
-=========================================
-Provide your emergency alert below:
 """
     
     return prompt
